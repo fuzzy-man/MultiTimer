@@ -93,6 +93,7 @@ const I18N = {
     "dialog.hours": "Години",
     "dialog.minutesField": "Хвилини",
     "dialog.openCalendar": "Відкрити календар",
+    "dialog.delete": "Видалити",
     "dialog.cancel": "Скасувати",
     "dialog.save": "Зберегти",
     "validation.time": "Вкажіть час у форматі 00:00-23:59 або 24:00.",
@@ -166,6 +167,7 @@ const I18N = {
     "dialog.hours": "Hours",
     "dialog.minutesField": "Minutes",
     "dialog.openCalendar": "Open calendar",
+    "dialog.delete": "Delete",
     "dialog.cancel": "Cancel",
     "dialog.save": "Save",
     "validation.time": "Enter time as 00:00-23:59 or 24:00.",
@@ -202,6 +204,7 @@ const timerForm = document.querySelector("#timerForm");
 const dialogTitle = document.querySelector("#dialogTitle");
 const dialogCloseButton = document.querySelector("#dialogCloseButton");
 const cancelEditButton = document.querySelector("#cancelEditButton");
+const deleteEditButton = document.querySelector("#deleteEditButton");
 const editTitle = document.querySelector("#editTitle");
 const editDurationHours = document.querySelector("#editDurationHours");
 const editDurationMinutes = document.querySelector("#editDurationMinutes");
@@ -1120,6 +1123,7 @@ function openEditDialog(timerId = null, initialValues = {}) {
   const shouldShowDialog = !timerDialog.open;
   editingTimerId = timer?.id || null;
   dialogTitle.textContent = timer ? t("dialog.editTitle") : t("dialog.newTitle");
+  deleteEditButton.hidden = !timer;
   editTitle.value = timer?.title || t("timer.defaultTitle");
   setEditDurationValue(
     initialValues.durationMinutes ?? timer?.durationMinutes ?? DEFAULT_DURATION_MINUTES,
@@ -1155,6 +1159,7 @@ function closeEditDialog() {
   }
 
   editingTimerId = null;
+  deleteEditButton.hidden = true;
 }
 
 function saveEditFromDialog() {
@@ -1838,8 +1843,21 @@ targetDatePickerButton.addEventListener("click", openTargetDatePicker);
 
 dialogCloseButton.addEventListener("click", closeEditDialog);
 cancelEditButton.addEventListener("click", closeEditDialog);
+
+deleteEditButton.addEventListener("click", () => {
+  if (!editingTimerId) {
+    return;
+  }
+
+  const timerId = editingTimerId;
+
+  closeEditDialog();
+  deleteTimer(timerId);
+});
+
 timerDialog.addEventListener("close", () => {
   editingTimerId = null;
+  deleteEditButton.hidden = true;
 });
 
 document.addEventListener("pointerdown", ensureAudioContext, { once: true });

@@ -113,12 +113,27 @@ h2 {
 }
 
 .eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0 0 4px;
   color: var(--accent-strong);
   font-size: 0.82rem;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0;
+}
+
+.version-badge {
+  border: 1px solid rgba(140, 244, 222, 0.38);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--muted);
+  background: rgba(87, 214, 193, 0.09);
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1.2;
+  text-transform: none;
 }
 
 .app-controls,
@@ -681,6 +696,10 @@ select {
 .dialog-actions {
   justify-content: flex-end;
   padding-top: 4px;
+}
+
+.dialog-actions .danger-button {
+  margin-right: auto;
 }
 
 .field,

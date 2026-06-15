@@ -10,7 +10,10 @@
     <main class="app-shell">
       <header class="app-header">
         <div class="brand">
-          <p class="eyebrow">MultiTimer</p>
+          <p class="eyebrow">
+            <span>MultiTimer</span>
+            <span class="version-badge">v1.0.0</span>
+          </p>
           <h1 data-i18n="app.title">Мульти таймери</h1>
         </div>
 
@@ -198,6 +201,7 @@
         </div>
 
         <div class="dialog-actions">
+          <button class="danger-button" id="deleteEditButton" type="button" data-i18n="dialog.delete">Видалити</button>
           <button class="secondary-button" id="cancelEditButton" type="button" data-i18n="dialog.cancel">Скасувати</button>
           <button class="primary-button" type="submit" data-i18n="dialog.save">Зберегти</button>
         </div>
