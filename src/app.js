@@ -612,7 +612,7 @@ function renderTimers({ sort = state.settings.autoSort } = {}) {
     });
 
     resetButton.addEventListener("click", () => {
-      resetDurationTimer(timer.id);
+      resetTimer(timer.id);
     });
 
     nextDayButton.addEventListener("click", () => {
@@ -861,6 +861,7 @@ function updateTimerRow(timer, remainingMs) {
   refs.pauseButton.textContent = paused ? t("timer.resume") : t("timer.pause");
   refs.pauseButton.setAttribute("aria-pressed", String(paused));
   refs.pauseButton.disabled = isOverdue && !timer.deactivated;
+  refs.resetButton.hidden = !(timer.mode === "duration" || (timer.mode === "targetTime" && isOverdue));
   refs.nextDayButton.disabled = timer.mode !== "targetTime" || !isOverdue;
   refs.deactivateButton.textContent = timer.deactivated ? t("timer.activate") : t("timer.deactivate");
   refs.deactivateButton.setAttribute("aria-pressed", String(timer.deactivated));
@@ -1012,6 +1013,39 @@ function resetDurationTimer(timerId) {
   renderTimers();
 }
 
+function resetTimer(timerId) {
+  const timer = findTimer(timerId);
+
+  if (!timer) {
+    return;
+  }
+
+  if (timer.mode === "duration") {
+    resetDurationTimer(timerId);
+    return;
+  }
+
+  if (timer.mode === "targetTime" && getRemainingMs(timer) <= 0) {
+    openTargetResetDialog(timerId);
+  }
+}
+
+function openTargetResetDialog(timerId) {
+  const timer = findTimer(timerId);
+
+  if (!timer || timer.mode !== "targetTime") {
+    return;
+  }
+
+  const nextTarget = getNextSameLocalTime(timer.targetAt);
+
+  openEditDialog(timerId, {
+    mode: "targetTime",
+    targetDate: getDateInputValue(nextTarget.getTime()),
+    targetTime: getTimeInputValue(nextTarget.getTime()),
+  });
+}
+
 function rescheduleTargetTimerNextDay(timerId) {
   const timer = findTimer(timerId);
 
@@ -1087,7 +1121,7 @@ function findTimer(timerId) {
   return state.timers.find((timer) => timer.id === timerId);
 }
 
-function openEditDialog(timerId = null) {
+function openEditDialog(timerId = null, initialValues = {}) {
   const timer = timerId ? findTimer(timerId) : null;
   const now = Date.now();
 
@@ -1099,21 +1133,23 @@ function openEditDialog(timerId = null) {
   editingTimerId = timer?.id || null;
   dialogTitle.textContent = timer ? t("dialog.editTitle") : t("dialog.newTitle");
   editTitle.value = timer?.title || t("timer.defaultTitle");
-  setEditDurationValue(timer?.durationMinutes || DEFAULT_DURATION_MINUTES);
-  setEditTargetDate(timer
+  setEditDurationValue(
+    initialValues.durationMinutes ?? timer?.durationMinutes ?? DEFAULT_DURATION_MINUTES,
+  );
+  setEditTargetDate(initialValues.targetDate ?? (timer
     ? timer.mode === "targetTime"
       ? timer.targetDate
       : getDateInputValue(timer.targetAt)
-    : getDateInputValue(now));
+    : getDateInputValue(now)));
   setEditTargetTime(
-    timer
+    initialValues.targetTime ?? (timer
       ? timer.mode === "targetTime"
         ? timer.targetTime
         : getTimeInputValue(timer.targetAt)
-      : getTimeInputValue(now),
+      : getTimeInputValue(now)),
   );
 
-  const mode = timer?.mode || "duration";
+  const mode = initialValues.mode || timer?.mode || "duration";
   timerForm.elements.timerMode.value = mode;
   updateModeFields();
 
