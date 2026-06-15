@@ -3,7 +3,7 @@ const DEFAULT_TITLE = "Новий таймер";
 const DEFAULT_DURATION_MINUTES = 25;
 const DEFAULT_ALARM_SECONDS = 6;
 const MAX_DURATION_MINUTES = 525600;
-const WARNING_MS = 15 * 60 * 1000;
+const DEFAULT_WARNING_MINUTES = 15;
 const TICK_MS = 1000;
 
 const RINGTONES = {
@@ -42,6 +42,7 @@ const I18N = {
     "controls.direction": "Напрям",
     "controls.ringtone": "Рингтон",
     "controls.alarmSeconds": "Сигнал, с",
+    "controls.warningMinutes": "Жовті, хв",
     "controls.clearAll": "Очистити всі таймери",
     "controls.mute": "Вимкнути",
     "controls.unmute": "Увімкнути",
@@ -108,6 +109,7 @@ const I18N = {
     "controls.direction": "Direction",
     "controls.ringtone": "Ringtone",
     "controls.alarmSeconds": "Alarm, s",
+    "controls.warningMinutes": "Yellow, min",
     "controls.clearAll": "Clear all timers",
     "controls.mute": "Mute",
     "controls.unmute": "Unmute",
@@ -180,6 +182,7 @@ const sortNowButton = document.querySelector("#sortNowButton");
 const sortDirectionSelect = document.querySelector("#sortDirectionSelect");
 const ringtoneSelect = document.querySelector("#ringtoneSelect");
 const alarmDurationSeconds = document.querySelector("#alarmDurationSeconds");
+const warningMinutesInput = document.querySelector("#warningMinutes");
 
 const timerDialog = document.querySelector("#timerDialog");
 const timerForm = document.querySelector("#timerForm");
@@ -203,6 +206,7 @@ let audioContext = null;
 let lastPageSignalMode = null;
 let neutralFaviconHref = null;
 let activeFaviconHref = null;
+let warningFaviconHref = null;
 let overdueFaviconHref = null;
 
 const rowById = new Map();
@@ -221,6 +225,7 @@ function createDefaultState() {
       sortDirection: "asc",
       ringtone: "classic",
       alarmDurationSeconds: DEFAULT_ALARM_SECONDS,
+      warningMinutes: DEFAULT_WARNING_MINUTES,
     },
     timers: [],
   };
@@ -277,6 +282,12 @@ function normalizeSettings(settings) {
       1,
       60,
       DEFAULT_ALARM_SECONDS,
+    ),
+    warningMinutes: clampInteger(
+      settings.warningMinutes,
+      1,
+      1440,
+      DEFAULT_WARNING_MINUTES,
     ),
   };
 }
@@ -819,8 +830,7 @@ function updateTimerRow(timer, remainingMs) {
 
   const paused = isPaused(timer);
   const isOverdue = !paused && remainingMs <= 0;
-  const isWarning =
-    !paused && !timer.deactivated && remainingMs > 0 && remainingMs <= WARNING_MS;
+  const isWarning = isTimerWarning(timer, remainingMs);
 
   refs.row.classList.toggle("is-overdue", isOverdue);
   refs.row.classList.toggle("is-warning", isWarning);
@@ -876,6 +886,19 @@ function getRemainingMs(timer, now = Date.now()) {
   }
 
   return timer.targetAt - now;
+}
+
+function isTimerWarning(timer, remainingMs) {
+  return (
+    !isPaused(timer) &&
+    !timer.deactivated &&
+    remainingMs > 0 &&
+    remainingMs <= getWarningMs()
+  );
+}
+
+function getWarningMs() {
+  return state.settings.warningMinutes * 60 * 1000;
 }
 
 function isPaused(timer) {
@@ -1343,6 +1366,7 @@ function updateToolbarUi() {
   sortDirectionSelect.value = state.settings.sortDirection;
   ringtoneSelect.value = state.settings.ringtone;
   alarmDurationSeconds.value = String(state.settings.alarmDurationSeconds);
+  warningMinutesInput.value = String(state.settings.warningMinutes);
   timerList.classList.toggle("can-drag", !state.settings.autoSort);
 }
 
@@ -1434,6 +1458,7 @@ function updatePageSignal() {
 function getPageSignalMode() {
   const now = Date.now();
   let hasActiveTimer = false;
+  let hasWarningTimer = false;
 
   for (const timer of state.timers) {
     if (timer.deactivated || isPaused(timer)) {
@@ -1441,10 +1466,19 @@ function getPageSignalMode() {
     }
 
     hasActiveTimer = true;
+    const remainingMs = getRemainingMs(timer, now);
 
-    if (getRemainingMs(timer, now) <= 0) {
+    if (remainingMs <= 0) {
       return "overdue";
     }
+
+    if (isTimerWarning(timer, remainingMs)) {
+      hasWarningTimer = true;
+    }
+  }
+
+  if (hasWarningTimer) {
+    return "warning";
   }
 
   return hasActiveTimer ? "active" : "neutral";
@@ -1461,11 +1495,13 @@ function setFavicon(signalMode) {
 
   neutralFaviconHref ||= createFavicon("#8a8580", false);
   activeFaviconHref ||= createFavicon("#57d6c1", false);
+  warningFaviconHref ||= createFavicon("#f2c14e", false);
   overdueFaviconHref ||= createFavicon("#ff6b5f", true);
 
   const faviconByMode = {
     neutral: neutralFaviconHref,
     active: activeFaviconHref,
+    warning: warningFaviconHref,
     overdue: overdueFaviconHref,
   };
 
@@ -1579,6 +1615,17 @@ alarmDurationSeconds.addEventListener("change", () => {
       DEFAULT_ALARM_SECONDS,
     );
   }, { render: false });
+});
+
+warningMinutesInput.addEventListener("change", () => {
+  updateSetting((settings) => {
+    settings.warningMinutes = clampInteger(
+      warningMinutesInput.value,
+      1,
+      1440,
+      DEFAULT_WARNING_MINUTES,
+    );
+  });
 });
 
 testAlarmButton.addEventListener("click", () => {
