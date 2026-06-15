@@ -30,6 +30,9 @@
           <button class="secondary-button" id="muteButton" type="button" aria-pressed="false">
             Mute
           </button>
+          <button class="secondary-button" id="notificationsButton" type="button" aria-pressed="false">
+            <span data-i18n="controls.notificationsEnable">Увімкнути сповіщення</span>
+          </button>
           <button class="secondary-button" id="testAlarmButton" type="button">
             <span data-i18n="controls.test">Тест</span>
           </button>
@@ -72,7 +75,7 @@
         </label>
 
         <label class="number-control" for="warningMinutes">
-          <span data-i18n="controls.warningMinutes">Жовті, хв</span>
+          <span data-i18n="controls.warningMinutes">Попередження, хв</span>
           <input id="warningMinutes" type="number" min="1" max="1440" step="1" inputmode="numeric" />
         </label>
       </section>

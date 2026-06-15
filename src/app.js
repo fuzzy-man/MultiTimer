@@ -3,7 +3,7 @@ const DEFAULT_TITLE = "Новий таймер";
 const DEFAULT_DURATION_MINUTES = 25;
 const DEFAULT_ALARM_SECONDS = 6;
 const MAX_DURATION_MINUTES = 525600;
-const DEFAULT_WARNING_MINUTES = 15;
+const DEFAULT_WARNING_MINUTES = 5;
 const TICK_MS = 1000;
 
 const RINGTONES = {
@@ -42,7 +42,11 @@ const I18N = {
     "controls.direction": "Напрям",
     "controls.ringtone": "Рингтон",
     "controls.alarmSeconds": "Сигнал, с",
-    "controls.warningMinutes": "Жовті, хв",
+    "controls.warningMinutes": "Попередження, хв",
+    "controls.notificationsEnable": "Увімкнути сповіщення",
+    "controls.notificationsOn": "Сповіщення увімкнені",
+    "controls.notificationsBlocked": "Сповіщення заблоковані",
+    "controls.notificationsUnavailable": "Сповіщення недоступні",
     "controls.clearAll": "Очистити всі таймери",
     "controls.mute": "Вимкнути",
     "controls.unmute": "Увімкнути",
@@ -94,6 +98,8 @@ const I18N = {
     "validation.time": "Вкажіть час у форматі 00:00-23:59 або 24:00.",
     "validation.date": "Введіть дату у форматі yyyy-mm-dd.",
     "validation.duration": "Вкажіть тривалість від 0:01 до 8760:00.",
+    "notification.expiredTitle": "MultiTimer",
+    "notification.expiredBody": "Час вийшов: {title}",
     "confirm.clearAll": "Видалити всі таймери?",
     "unit.day": "д",
     "unit.minShort": "хв",
@@ -109,7 +115,11 @@ const I18N = {
     "controls.direction": "Direction",
     "controls.ringtone": "Ringtone",
     "controls.alarmSeconds": "Alarm, s",
-    "controls.warningMinutes": "Yellow, min",
+    "controls.warningMinutes": "Warning, min",
+    "controls.notificationsEnable": "Enable notifications",
+    "controls.notificationsOn": "Notifications on",
+    "controls.notificationsBlocked": "Notifications blocked",
+    "controls.notificationsUnavailable": "Notifications unavailable",
     "controls.clearAll": "Clear all timers",
     "controls.mute": "Mute",
     "controls.unmute": "Unmute",
@@ -161,6 +171,8 @@ const I18N = {
     "validation.time": "Enter time as 00:00-23:59 or 24:00.",
     "validation.date": "Enter date as yyyy-mm-dd.",
     "validation.duration": "Enter a duration from 0:01 to 8760:00.",
+    "notification.expiredTitle": "MultiTimer",
+    "notification.expiredBody": "Time is up: {title}",
     "confirm.clearAll": "Delete all timers?",
     "unit.day": "d",
     "unit.minShort": "min",
@@ -175,6 +187,7 @@ const timerTemplate = document.querySelector("#timerTemplate");
 const volumeRange = document.querySelector("#volumeRange");
 const volumeValue = document.querySelector("#volumeValue");
 const muteButton = document.querySelector("#muteButton");
+const notificationsButton = document.querySelector("#notificationsButton");
 const testAlarmButton = document.querySelector("#testAlarmButton");
 const languageSelect = document.querySelector("#languageSelect");
 const autoSortToggle = document.querySelector("#autoSortToggle");
@@ -226,6 +239,7 @@ function createDefaultState() {
       ringtone: "classic",
       alarmDurationSeconds: DEFAULT_ALARM_SECONDS,
       warningMinutes: DEFAULT_WARNING_MINUTES,
+      desktopNotificationsEnabled: false,
     },
     timers: [],
   };
@@ -289,6 +303,7 @@ function normalizeSettings(settings) {
       1440,
       DEFAULT_WARNING_MINUTES,
     ),
+    desktopNotificationsEnabled: Boolean(settings.desktopNotificationsEnabled),
   };
 }
 
@@ -792,6 +807,7 @@ function updateTimers() {
   const now = Date.now();
   let shouldSave = false;
   let shouldPlayAlarm = false;
+  const expiredTimers = [];
 
   state.timers.forEach((timer) => {
     const remainingMs = getRemainingMs(timer, now);
@@ -805,6 +821,7 @@ function updateTimers() {
       timer.alarmed = true;
       shouldSave = true;
       shouldPlayAlarm = true;
+      expiredTimers.push(timer);
     }
 
     updateTimerRow(timer, remainingMs);
@@ -819,6 +836,8 @@ function updateTimers() {
   if (shouldPlayAlarm) {
     playAlarm();
   }
+
+  expiredTimers.forEach(notifyTimerExpired);
 }
 
 function updateTimerRow(timer, remainingMs) {
@@ -1361,6 +1380,7 @@ function updateToolbarUi() {
   muteButton.classList.toggle("is-active", state.settings.muted);
   muteButton.setAttribute("aria-pressed", String(state.settings.muted));
   muteButton.textContent = state.settings.muted ? t("controls.unmute") : t("controls.mute");
+  updateNotificationsUi();
   autoSortToggle.checked = state.settings.autoSort;
   sortNowButton.disabled = state.settings.autoSort;
   sortDirectionSelect.value = state.settings.sortDirection;
@@ -1368,6 +1388,27 @@ function updateToolbarUi() {
   alarmDurationSeconds.value = String(state.settings.alarmDurationSeconds);
   warningMinutesInput.value = String(state.settings.warningMinutes);
   timerList.classList.toggle("can-drag", !state.settings.autoSort);
+}
+
+function updateNotificationsUi() {
+  const permission = getDesktopNotificationPermission();
+  const enabled =
+    state.settings.desktopNotificationsEnabled && permission === "granted";
+  let labelKey = "controls.notificationsEnable";
+
+  notificationsButton.disabled = permission === "unsupported" || permission === "denied";
+  notificationsButton.classList.toggle("is-active", enabled);
+  notificationsButton.setAttribute("aria-pressed", String(enabled));
+
+  if (permission === "unsupported") {
+    labelKey = "controls.notificationsUnavailable";
+  } else if (permission === "denied") {
+    labelKey = "controls.notificationsBlocked";
+  } else if (enabled) {
+    labelKey = "controls.notificationsOn";
+  }
+
+  notificationsButton.textContent = t(labelKey);
 }
 
 function ensureAudioContext() {
@@ -1422,6 +1463,71 @@ function playAlarm() {
       });
       time += ringtone.step;
     }
+  }
+}
+
+function getDesktopNotificationPermission() {
+  if (!("Notification" in globalThis)) {
+    return "unsupported";
+  }
+
+  return Notification.permission;
+}
+
+async function toggleDesktopNotifications() {
+  const permission = getDesktopNotificationPermission();
+
+  if (permission === "unsupported" || permission === "denied") {
+    updateSetting((settings) => {
+      settings.desktopNotificationsEnabled = false;
+    }, { render: false });
+    return;
+  }
+
+  if (permission === "granted") {
+    updateSetting((settings) => {
+      settings.desktopNotificationsEnabled = !settings.desktopNotificationsEnabled;
+    }, { render: false });
+    return;
+  }
+
+  try {
+    const nextPermission = await Notification.requestPermission();
+
+    updateSetting((settings) => {
+      settings.desktopNotificationsEnabled = nextPermission === "granted";
+    }, { render: false });
+  } catch {
+    updateSetting((settings) => {
+      settings.desktopNotificationsEnabled = false;
+    }, { render: false });
+  }
+}
+
+function notifyTimerExpired(timer) {
+  if (
+    !state.settings.desktopNotificationsEnabled ||
+    getDesktopNotificationPermission() !== "granted"
+  ) {
+    return;
+  }
+
+  try {
+    overdueFaviconHref ||= createFavicon("#ff6b5f", true);
+    const notification = new Notification(t("notification.expiredTitle"), {
+      body: t("notification.expiredBody").replace("{title}", timer.title),
+      icon: overdueFaviconHref,
+      renotify: true,
+      tag: `multitimer-${timer.id}`,
+      timestamp: Date.now(),
+    });
+
+    notification.onclick = () => {
+      globalThis.focus();
+      notification.close();
+    };
+  } catch {
+    // Browser notification permissions and platform support can change at runtime.
   }
 }
 
@@ -1570,6 +1676,10 @@ muteButton.addEventListener("click", () => {
   updateSetting((settings) => {
     settings.muted = !settings.muted;
   }, { render: false });
+});
+
+notificationsButton.addEventListener("click", () => {
+  toggleDesktopNotifications();
 });
 
 languageSelect.addEventListener("change", () => {
