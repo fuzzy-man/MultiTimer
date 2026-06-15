@@ -612,7 +612,7 @@ function renderTimers({ sort = state.settings.autoSort } = {}) {
     });
 
     resetButton.addEventListener("click", () => {
-      resetTimer(timer.id);
+      resetDurationTimer(timer.id);
     });
 
     nextDayButton.addEventListener("click", () => {
@@ -624,7 +624,7 @@ function renderTimers({ sort = state.settings.autoSort } = {}) {
     });
 
     editButton.addEventListener("click", () => {
-      openEditDialog(timer.id);
+      openTimerEditDialog(timer.id);
     });
 
     deleteButton.addEventListener("click", () => {
@@ -861,7 +861,8 @@ function updateTimerRow(timer, remainingMs) {
   refs.pauseButton.textContent = paused ? t("timer.resume") : t("timer.pause");
   refs.pauseButton.setAttribute("aria-pressed", String(paused));
   refs.pauseButton.disabled = isOverdue && !timer.deactivated;
-  refs.resetButton.hidden = !(timer.mode === "duration" || (timer.mode === "targetTime" && isOverdue));
+  refs.resetButton.hidden = timer.mode !== "duration";
+  refs.nextDayButton.hidden = !(timer.mode === "targetTime" && isOverdue);
   refs.nextDayButton.disabled = timer.mode !== "targetTime" || !isOverdue;
   refs.deactivateButton.textContent = timer.deactivated ? t("timer.activate") : t("timer.deactivate");
   refs.deactivateButton.setAttribute("aria-pressed", String(timer.deactivated));
@@ -1013,36 +1014,23 @@ function resetDurationTimer(timerId) {
   renderTimers();
 }
 
-function resetTimer(timerId) {
+function openTimerEditDialog(timerId) {
   const timer = findTimer(timerId);
 
   if (!timer) {
     return;
   }
 
-  if (timer.mode === "duration") {
-    resetDurationTimer(timerId);
+  if (timer.mode !== "targetTime" || getRemainingMs(timer) > 0) {
+    openEditDialog(timerId);
     return;
   }
 
-  if (timer.mode === "targetTime" && getRemainingMs(timer) <= 0) {
-    openTargetResetDialog(timerId);
-  }
-}
-
-function openTargetResetDialog(timerId) {
-  const timer = findTimer(timerId);
-
-  if (!timer || timer.mode !== "targetTime") {
-    return;
-  }
-
-  const nextTarget = getNextSameLocalTime(timer.targetAt);
-
+  const now = Date.now();
   openEditDialog(timerId, {
     mode: "targetTime",
-    targetDate: getDateInputValue(nextTarget.getTime()),
-    targetTime: getTimeInputValue(nextTarget.getTime()),
+    targetDate: getDateInputValue(now),
+    targetTime: getTimeInputValue(now),
   });
 }
 
