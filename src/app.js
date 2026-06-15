@@ -85,9 +85,7 @@ const I18N = {
     "dialog.timeFormat": "Формат часу",
     "dialog.duration": "Тривалість",
     "dialog.durationTime": "Тривалість",
-    "dialog.minutes": "Хвилини",
     "dialog.targetTime": "Цільовий час",
-    "dialog.minutesCount": "Кількість хвилин",
     "dialog.date": "Дата",
     "dialog.finishTime": "Час завершення",
     "dialog.hours": "Години",
@@ -103,7 +101,6 @@ const I18N = {
     "notification.expiredBody": "Час вийшов: {title}",
     "confirm.clearAll": "Видалити всі таймери?",
     "unit.day": "д",
-    "unit.minShort": "хв",
   },
   en: {
     "app.title": "Multi timers",
@@ -159,9 +156,7 @@ const I18N = {
     "dialog.timeFormat": "Time format",
     "dialog.duration": "Duration",
     "dialog.durationTime": "Duration",
-    "dialog.minutes": "Minutes",
     "dialog.targetTime": "Target time",
-    "dialog.minutesCount": "Minutes",
     "dialog.date": "Date",
     "dialog.finishTime": "Finish time",
     "dialog.hours": "Hours",
@@ -177,7 +172,6 @@ const I18N = {
     "notification.expiredBody": "Time is up: {title}",
     "confirm.clearAll": "Delete all timers?",
     "unit.day": "d",
-    "unit.minShort": "min",
   },
 };
 
@@ -365,12 +359,16 @@ function normalizeTimer(timer, defaultTitle = DEFAULT_TITLE) {
     MAX_DURATION_MINUTES,
     DEFAULT_DURATION_MINUTES,
   );
+  const defaultTargetAt = getDefaultTargetTimestamp();
+  const fallbackTargetAt = mode === "duration"
+    ? Date.now() + durationMinutes * 60 * 1000
+    : defaultTargetAt;
   const targetTime = isValidTime(timer.targetTime)
     ? timer.targetTime
-    : getTimeInputValue(Date.now() + durationMinutes * 60 * 1000);
+    : getTimeInputValue(fallbackTargetAt);
   const fallbackTargetDate = Number.isFinite(timer.targetAt)
     ? getDateInputValue(timer.targetAt)
-    : getDateInputValue(Date.now());
+    : getDateInputValue(defaultTargetAt);
   const targetDate = isValidDate(timer.targetDate) ? timer.targetDate : fallbackTargetDate;
   const targetAt =
     Number.isFinite(timer.targetAt) && timer.targetAt > 0
@@ -409,12 +407,13 @@ function createTimerFromForm() {
   const formData = new FormData(timerForm);
   const mode = formData.get("timerMode") === "targetTime" ? "targetTime" : "duration";
   const durationMinutes = getDurationMinutesFromForm();
+  const defaultTargetAt = getDefaultTargetTimestamp();
   const targetDate = isValidDate(editTargetDate.value)
     ? editTargetDate.value
-    : getDateInputValue(Date.now());
+    : getDateInputValue(defaultTargetAt);
   const targetTime = isValidTime(getEditTargetTime())
     ? getEditTargetTime()
-    : getTimeInputValue(Date.now());
+    : getTimeInputValue(defaultTargetAt);
 
   return {
     id: createId(),
@@ -681,9 +680,12 @@ function arrangeTimers({ sort }) {
 }
 
 function arrangeTimerGroup(timers, sort) {
-  const sortableTimers = timers
-    .filter((timer) => !timer.deactivated)
-    .sort(sort ? compareTimerTime : compareManualOrder);
+  const sortableTimers = timers.filter((timer) => !timer.deactivated);
+
+  if (sort) {
+    sortableTimers.sort(compareTimerTime);
+  }
+
   let nextSortableIndex = 0;
   return timers.map((timer) => {
     if (timer.deactivated) {
@@ -694,10 +696,6 @@ function arrangeTimerGroup(timers, sort) {
     nextSortableIndex += 1;
     return nextTimer;
   });
-}
-
-function compareManualOrder() {
-  return 0;
 }
 
 function compareTimerTime(first, second) {
@@ -882,8 +880,6 @@ function renderStaticTimerData(timer, refs) {
   const isDuration = timer.mode === "duration";
 
   refs.pauseButton.hidden = !isDuration;
-  refs.resetButton.hidden = !isDuration;
-  refs.nextDayButton.hidden = timer.mode !== "targetTime";
   refs.resetButton.textContent = t("timer.reset");
   refs.nextDayButton.textContent = t("timer.nextDay");
   refs.editButton.textContent = t("timer.edit");
@@ -1029,7 +1025,7 @@ function openTimerEditDialog(timerId) {
     return;
   }
 
-  const now = Date.now();
+  const now = getDefaultTargetTimestamp();
   openEditDialog(timerId, {
     mode: "targetTime",
     targetDate: getDateInputValue(now),
@@ -1114,7 +1110,7 @@ function findTimer(timerId) {
 
 function openEditDialog(timerId = null, initialValues = {}) {
   const timer = timerId ? findTimer(timerId) : null;
-  const now = Date.now();
+  const defaultTargetAt = getDefaultTargetTimestamp();
 
   if (timerId && !timer) {
     return;
@@ -1132,13 +1128,13 @@ function openEditDialog(timerId = null, initialValues = {}) {
     ? timer.mode === "targetTime"
       ? timer.targetDate
       : getDateInputValue(timer.targetAt)
-    : getDateInputValue(now)));
+    : getDateInputValue(defaultTargetAt)));
   setEditTargetTime(
     initialValues.targetTime ?? (timer
       ? timer.mode === "targetTime"
         ? timer.targetTime
         : getTimeInputValue(timer.targetAt)
-      : getTimeInputValue(now)),
+      : getTimeInputValue(defaultTargetAt)),
   );
 
   const mode = initialValues.mode || timer?.mode || "duration";
@@ -1151,6 +1147,18 @@ function openEditDialog(timerId = null, initialValues = {}) {
 
   editTitle.focus();
   editTitle.select();
+}
+
+function getDefaultTargetTimestamp(now = Date.now()) {
+  const target = new Date(now);
+
+  target.setSeconds(0, 0);
+
+  if (target.getTime() <= now) {
+    target.setMinutes(target.getMinutes() + 1);
+  }
+
+  return target.getTime();
 }
 
 function closeEditDialog() {
@@ -1290,7 +1298,9 @@ function getEditTargetTime() {
 }
 
 function setEditTargetTime(value) {
-  const time = isValidTime(value) ? value : getTimeInputValue(Date.now());
+  const time = isValidTime(value)
+    ? value
+    : getTimeInputValue(getDefaultTargetTimestamp());
   const [hours, minutes] = time.split(":");
 
   editTargetHours.value = hours;
@@ -1310,7 +1320,7 @@ function toPaddedTimePart(value) {
 
 function normalizeTargetFields() {
   if (!isValidDate(editTargetDate.value)) {
-    setEditTargetDate(getDateInputValue(Date.now()));
+    setEditTargetDate("");
   } else {
     setEditTargetDate(editTargetDate.value);
   }
@@ -1341,7 +1351,9 @@ function validateTargetFields() {
 }
 
 function setEditTargetDate(value) {
-  const dateValue = isValidDate(value) ? value : getDateInputValue(Date.now());
+  const dateValue = isValidDate(value)
+    ? value
+    : getDateInputValue(getDefaultTargetTimestamp());
 
   editTargetDate.value = dateValue;
   editTargetDatePicker.value = dateValue;
