@@ -5,6 +5,7 @@ const DEFAULT_ALARM_SECONDS = 6;
 const MAX_DURATION_MINUTES = 525600;
 const DEFAULT_WARNING_MINUTES = 5;
 const TICK_MS = 1000;
+const PAUSED_TARGET_LABEL = "—";
 
 const RINGTONES = {
   classic: {
@@ -374,10 +375,9 @@ function normalizeTimer(timer, defaultTitle = DEFAULT_TITLE) {
     Number.isFinite(timer.targetAt) && timer.targetAt > 0
       ? timer.targetAt
       : calculateTargetAt({ mode, durationMinutes, targetDate, targetTime });
-  const pausedRemainingMs =
-    mode === "duration" && Number.isFinite(timer.pausedRemainingMs)
-      ? timer.pausedRemainingMs
-      : null;
+  const pausedRemainingMs = Number.isFinite(timer.pausedRemainingMs)
+    ? timer.pausedRemainingMs
+    : null;
 
   return {
     id: typeof timer.id === "string" ? timer.id : createId(),
@@ -712,6 +712,10 @@ function compareTimerTime(first, second) {
 
 function getSortAt(timer) {
   if (isPaused(timer)) {
+    if (timer.mode === "targetTime") {
+      return getTargetTimerResumeAt(timer);
+    }
+
     return Date.now() + timer.pausedRemainingMs;
   }
 
@@ -861,7 +865,7 @@ function updateTimerRow(timer, remainingMs) {
   refs.targetOutput.classList.toggle("is-warning", isWarning);
   refs.pauseButton.textContent = paused ? t("timer.resume") : t("timer.pause");
   refs.pauseButton.setAttribute("aria-pressed", String(paused));
-  refs.pauseButton.disabled = isOverdue && !timer.deactivated;
+  refs.pauseButton.disabled = false;
   refs.resetButton.hidden = timer.mode !== "duration";
   refs.nextDayButton.hidden = !(timer.mode === "targetTime" && isOverdue);
   refs.nextDayButton.disabled = timer.mode !== "targetTime" || !isOverdue;
@@ -876,18 +880,17 @@ function updateTimerRow(timer, remainingMs) {
 }
 
 function renderStaticTimerData(timer, refs) {
-  const targetDate = new Date(timer.targetAt);
-  const isDuration = timer.mode === "duration";
-
-  refs.pauseButton.hidden = !isDuration;
+  refs.pauseButton.hidden = false;
   refs.resetButton.textContent = t("timer.reset");
   refs.nextDayButton.textContent = t("timer.nextDay");
   refs.editButton.textContent = t("timer.edit");
 
   if (isPaused(timer)) {
-    refs.targetOutput.textContent = t("timer.paused");
+    refs.targetOutput.textContent = PAUSED_TARGET_LABEL;
     refs.targetOutput.removeAttribute("datetime");
   } else {
+    const targetDate = new Date(timer.targetAt);
+
     refs.targetOutput.textContent = formatDateTimeLocal(timer.targetAt);
     refs.targetOutput.dateTime = targetDate.toISOString();
   }
@@ -922,7 +925,7 @@ function getWarningMs() {
 }
 
 function isPaused(timer) {
-  return timer.mode === "duration" && Number.isFinite(timer.pausedRemainingMs);
+  return Number.isFinite(timer.pausedRemainingMs);
 }
 
 function formatDuration(ms) {
@@ -975,27 +978,56 @@ function formatDateTimeLocal(timestamp) {
 function togglePauseTimer(timerId) {
   const timer = findTimer(timerId);
 
-  if (!timer || timer.mode !== "duration") {
+  if (!timer) {
     return;
   }
 
   if (isPaused(timer)) {
-    timer.targetAt = Date.now() + timer.pausedRemainingMs;
-    timer.pausedRemainingMs = null;
-    timer.alarmed = false;
+    resumeTimer(timer);
   } else {
-    const remainingMs = timer.targetAt - Date.now();
+    pauseTimer(timer);
+  }
 
-    if (remainingMs <= 0 && !timer.deactivated) {
-      return;
-    }
+  saveState();
+  renderTimers();
+}
 
-    timer.pausedRemainingMs = remainingMs;
+function pauseTimer(timer) {
+  timer.pausedRemainingMs = getRemainingMs(timer);
+
+  if (timer.pausedRemainingMs <= 0) {
+    timer.alarmed = true;
+  }
+}
+
+function resumeTimer(timer) {
+  const pausedRemainingMs = timer.pausedRemainingMs;
+
+  timer.pausedRemainingMs = null;
+
+  if (timer.mode === "targetTime") {
+    resumeTargetTimer(timer);
+    return;
+  }
+
+  timer.targetAt = Date.now() + pausedRemainingMs;
+
+  if (pausedRemainingMs > 0) {
+    timer.alarmed = false;
+  }
+}
+
+function resumeTargetTimer(timer) {
+  const now = Date.now();
+  const targetAt = getTargetTimestamp(timer.targetDate, timer.targetTime);
+
+  if (targetAt > now) {
+    timer.targetAt = targetAt;
+  } else {
+    setTargetTimerAt(timer, getNextSameLocalTime(targetAt, now).getTime());
   }
 
   timer.alarmed = false;
-  saveState();
-  renderTimers();
 }
 
 function resetDurationTimer(timerId) {
@@ -1042,21 +1074,35 @@ function rescheduleTargetTimerNextDay(timerId) {
 
   const nextTarget = getNextSameLocalTime(timer.targetAt);
 
-  timer.targetAt = nextTarget.getTime();
-  timer.targetDate = getDateInputValue(nextTarget.getTime());
-  timer.targetTime = getTimeInputValue(nextTarget.getTime());
+  setTargetTimerAt(timer, nextTarget.getTime());
   timer.deactivated = false;
   timer.alarmed = false;
   saveState();
   renderTimers();
 }
 
-function getNextSameLocalTime(timestamp) {
+function getTargetTimerResumeAt(timer, now = Date.now()) {
+  const targetAt = getTargetTimestamp(timer.targetDate, timer.targetTime);
+
+  if (targetAt > now) {
+    return targetAt;
+  }
+
+  return getNextSameLocalTime(targetAt, now).getTime();
+}
+
+function setTargetTimerAt(timer, timestamp) {
+  timer.targetAt = timestamp;
+  timer.targetDate = getDateInputValue(timestamp);
+  timer.targetTime = getTimeInputValue(timestamp);
+}
+
+function getNextSameLocalTime(timestamp, now = Date.now()) {
   const nextTarget = new Date(timestamp);
 
   do {
     nextTarget.setDate(nextTarget.getDate() + 1);
-  } while (nextTarget.getTime() <= Date.now());
+  } while (nextTarget.getTime() <= now);
 
   return nextTarget;
 }
