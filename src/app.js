@@ -5,6 +5,9 @@ const DEFAULT_ALARM_SECONDS = 6;
 const MAX_DURATION_MINUTES = 525600;
 const DEFAULT_WARNING_MINUTES = 5;
 const TICK_MS = 1000;
+const MAX_TIMEOUT_MS = 2147483647;
+const ALARM_FALLBACK_GRACE_MS = 2000;
+const ALARM_WORKER_RESPONSE_GRACE_MS = 500;
 const PAUSED_TARGET_LABEL = "—";
 
 const RINGTONES = {
@@ -219,6 +222,10 @@ let neutralFaviconHref = null;
 let activeFaviconHref = null;
 let warningFaviconHref = null;
 let overdueFaviconHref = null;
+let alarmSchedulerWorker = null;
+let alarmFallbackTimeoutId = null;
+let resumeAlarmCheckTimeoutId = null;
+let alarmScheduleSignature = null;
 
 const rowById = new Map();
 const dropMarker = document.createElement("div");
@@ -607,6 +614,7 @@ function renderTimers({ sort = state.settings.autoSort } = {}) {
     titleInput.addEventListener("input", () => {
       timer.title = titleInput.value.trim() || t("timer.defaultTitle");
       saveState();
+      syncAlarmScheduler();
     });
 
     pauseButton.addEventListener("click", () => {
@@ -808,7 +816,10 @@ function moveTimerBefore(timerId, beforeId) {
   state.timers.splice(toIndex === -1 ? state.timers.length : toIndex, 0, timer);
 }
 
-function updateTimers() {
+function updateTimers({
+  notifiedTimerIds = new Set(),
+  timerIdsToProcess = null,
+} = {}) {
   const now = Date.now();
   let shouldSave = false;
   let shouldPlayAlarm = false;
@@ -818,6 +829,7 @@ function updateTimers() {
     const remainingMs = getRemainingMs(timer, now);
 
     if (
+      (!timerIdsToProcess || timerIdsToProcess.has(timer.id)) &&
       !isPaused(timer) &&
       !timer.deactivated &&
       remainingMs <= 0 &&
@@ -842,7 +854,21 @@ function updateTimers() {
     playAlarm();
   }
 
-  expiredTimers.forEach(notifyTimerExpired);
+  expiredTimers
+    .filter((timer) => !notifiedTimerIds.has(timer.id))
+    .forEach(notifyTimerExpired);
+
+  syncAlarmScheduler();
+}
+
+function refreshTimers() {
+  const now = Date.now();
+
+  state.timers.forEach((timer) => {
+    updateTimerRow(timer, getRemainingMs(timer, now));
+  });
+
+  updatePageSignal();
 }
 
 function updateTimerRow(timer, remainingMs) {
@@ -1553,6 +1579,238 @@ function playAlarm() {
   }
 }
 
+function createAlarmSchedulerWorker() {
+  if (!("Worker" in globalThis) || !("Blob" in globalThis) || !("URL" in globalThis)) {
+    return null;
+  }
+
+  const workerSource = `
+    let timers = [];
+    let timeoutId = null;
+    let notificationsEnabled = false;
+    const MAX_TIMEOUT_MS = ${MAX_TIMEOUT_MS};
+
+    self.onmessage = (event) => {
+      const data = event.data || {};
+
+      if (data.type === "check") {
+        if (timers.length > 0 && timers[0].targetAt <= Date.now()) {
+          handleDeadline();
+        } else {
+          scheduleNextDeadline();
+        }
+        return;
+      }
+
+      if (data.type !== "schedule") {
+        return;
+      }
+
+      timers = Array.isArray(data.timers)
+        ? data.timers
+          .filter((timer) => Number.isFinite(timer.targetAt))
+          .sort((first, second) => first.targetAt - second.targetAt)
+        : [];
+      notificationsEnabled = data.notificationsEnabled === true;
+      scheduleNextDeadline();
+    };
+
+    function scheduleNextDeadline() {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+
+      if (timers.length === 0) {
+        return;
+      }
+
+      const remainingMs = timers[0].targetAt - Date.now();
+      const delay = Math.min(MAX_TIMEOUT_MS, Math.max(0, remainingMs));
+
+      timeoutId = setTimeout(handleDeadline, delay);
+    }
+
+    function handleDeadline() {
+      timeoutId = null;
+      const now = Date.now();
+
+      if (timers.length > 0 && timers[0].targetAt > now) {
+        scheduleNextDeadline();
+        return;
+      }
+
+      const dueTimers = timers.filter((timer) => timer.targetAt <= now);
+      const dueTimerIds = dueTimers.map((timer) => timer.id);
+      const notifiedTimerIds = dueTimers
+        .filter(showNotification)
+        .map((timer) => timer.id);
+
+      timers = timers.filter((timer) => timer.targetAt > now);
+      self.postMessage({
+        type: "deadline",
+        timerIds: dueTimerIds,
+        notifiedTimerIds,
+      });
+      scheduleNextDeadline();
+    }
+
+    function showNotification(timer) {
+      if (
+        !notificationsEnabled ||
+        !("Notification" in self) ||
+        Notification.permission !== "granted"
+      ) {
+        return false;
+      }
+
+      try {
+        const notification = new Notification(timer.notificationTitle, {
+          body: timer.notificationBody,
+          icon: timer.icon,
+          renotify: true,
+          tag: "multitimer-" + timer.id,
+          timestamp: timer.targetAt,
+        });
+
+        notification.onclick = () => {
+          self.postMessage({ type: "notification-click" });
+          notification.close();
+        };
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  `;
+
+  try {
+    const workerUrl = URL.createObjectURL(new Blob([workerSource], {
+      type: "text/javascript",
+    }));
+    const worker = new Worker(workerUrl, { name: "multitimer-alarm-scheduler" });
+
+    URL.revokeObjectURL(workerUrl);
+    worker.addEventListener("message", handleAlarmSchedulerMessage);
+    worker.addEventListener("error", () => {
+      if (alarmSchedulerWorker !== worker) {
+        return;
+      }
+
+      worker.terminate();
+      alarmSchedulerWorker = null;
+      alarmScheduleSignature = null;
+      syncAlarmScheduler();
+    }, { once: true });
+    return worker;
+  } catch {
+    return null;
+  }
+}
+
+function handleAlarmSchedulerMessage(event) {
+  const data = event.data || {};
+
+  if (data.type === "notification-click") {
+    globalThis.focus();
+    return;
+  }
+
+  if (data.type !== "deadline") {
+    return;
+  }
+
+  clearTimeout(resumeAlarmCheckTimeoutId);
+  resumeAlarmCheckTimeoutId = null;
+  updateTimers({
+    notifiedTimerIds: new Set(
+      Array.isArray(data.notifiedTimerIds) ? data.notifiedTimerIds : [],
+    ),
+    timerIdsToProcess: new Set(
+      Array.isArray(data.timerIds) ? data.timerIds : [],
+    ),
+  });
+}
+
+function checkTimersAfterPageResume() {
+  if (!alarmSchedulerWorker) {
+    updateTimers();
+    return;
+  }
+
+  if (resumeAlarmCheckTimeoutId !== null) {
+    return;
+  }
+
+  resumeAlarmCheckTimeoutId = setTimeout(() => {
+    resumeAlarmCheckTimeoutId = null;
+    updateTimers();
+  }, ALARM_WORKER_RESPONSE_GRACE_MS);
+  alarmSchedulerWorker.postMessage({ type: "check" });
+}
+
+function syncAlarmScheduler() {
+  const notificationsEnabled =
+    state.settings.desktopNotificationsEnabled &&
+    getDesktopNotificationPermission() === "granted";
+  const icon = notificationsEnabled
+    ? (overdueFaviconHref ||= createFavicon("#ff6b5f", true))
+    : "";
+  const timers = state.timers
+    .filter((timer) => (
+      !timer.deactivated &&
+      !timer.alarmed &&
+      !isPaused(timer) &&
+      Number.isFinite(timer.targetAt)
+    ))
+    .map((timer) => ({
+      id: timer.id,
+      targetAt: timer.targetAt,
+      notificationTitle: t("notification.expiredTitle"),
+      notificationBody: t("notification.expiredBody").replace("{title}", timer.title),
+      icon,
+    }))
+    .sort((first, second) => first.targetAt - second.targetAt);
+  const signature = JSON.stringify({ notificationsEnabled, timers });
+
+  if (signature === alarmScheduleSignature) {
+    return;
+  }
+
+  alarmScheduleSignature = signature;
+  alarmSchedulerWorker?.postMessage({
+    type: "schedule",
+    notificationsEnabled,
+    timers,
+  });
+  scheduleFallbackAlarm(timers[0]?.targetAt ?? null);
+}
+
+function scheduleFallbackAlarm(targetAt) {
+  clearTimeout(alarmFallbackTimeoutId);
+  alarmFallbackTimeoutId = null;
+
+  if (!Number.isFinite(targetAt)) {
+    return;
+  }
+
+  const remainingMs = Math.max(0, targetAt - Date.now());
+  const delay = Math.min(
+    MAX_TIMEOUT_MS,
+    remainingMs + ALARM_FALLBACK_GRACE_MS,
+  );
+
+  alarmFallbackTimeoutId = setTimeout(() => {
+    alarmFallbackTimeoutId = null;
+
+    if (targetAt > Date.now()) {
+      alarmScheduleSignature = null;
+      syncAlarmScheduler();
+      return;
+    }
+
+    updateTimers();
+  }, delay);
+}
+
 function getDesktopNotificationPermission() {
   if (!("Notification" in globalThis)) {
     return "unsupported";
@@ -1726,6 +1984,7 @@ function updateSetting(updater, { render = true } = {}) {
     renderTimers();
   } else {
     updateToolbarUi();
+    syncAlarmScheduler();
   }
 }
 
@@ -1920,7 +2179,15 @@ timerDialog.addEventListener("close", () => {
 
 document.addEventListener("pointerdown", ensureAudioContext, { once: true });
 document.addEventListener("keydown", ensureAudioContext, { once: true });
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    checkTimersAfterPageResume();
+  }
+});
+globalThis.addEventListener("focus", checkTimersAfterPageResume);
+globalThis.addEventListener("pageshow", checkTimersAfterPageResume);
 
+alarmSchedulerWorker = createAlarmSchedulerWorker();
 updateToolbarUi();
 renderTimers();
-setInterval(updateTimers, TICK_MS);
+setInterval(refreshTimers, TICK_MS);
