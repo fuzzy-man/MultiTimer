@@ -595,6 +595,7 @@ function renderTimers({ sort = state.settings.autoSort } = {}) {
     const dragHandle = row.querySelector(".drag-handle");
     const refs = {
       row,
+      titleInput,
       timeOutput: row.querySelector(".timer-time"),
       targetOutput: row.querySelector(".target-time"),
       modeOutput: row.querySelector(".mode-value"),
@@ -609,9 +610,17 @@ function renderTimers({ sort = state.settings.autoSort } = {}) {
     };
 
     row.dataset.timerId = timer.id;
+    titleInput.id = `timer-title-${timer.id}`;
+    titleInput.name = titleInput.id;
     titleInput.value = timer.title;
 
-    titleInput.addEventListener("input", () => {
+    titleInput.addEventListener("input", (event) => {
+      // Firefox session restore emits input without an inputType, not a user edit.
+      if (!event.inputType) {
+        titleInput.value = timer.title;
+        return;
+      }
+
       timer.title = titleInput.value.trim() || t("timer.defaultTitle");
       saveState();
       syncAlarmScheduler();
@@ -2185,7 +2194,18 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 globalThis.addEventListener("focus", checkTimersAfterPageResume);
-globalThis.addEventListener("pageshow", checkTimersAfterPageResume);
+globalThis.addEventListener("pageshow", () => {
+  // The saved application state takes precedence over browser-restored form values.
+  state.timers.forEach((timer) => {
+    const refs = rowById.get(timer.id);
+
+    if (refs) {
+      refs.titleInput.value = timer.title;
+    }
+  });
+  updateToolbarUi();
+  checkTimersAfterPageResume();
+});
 
 alarmSchedulerWorker = createAlarmSchedulerWorker();
 updateToolbarUi();
