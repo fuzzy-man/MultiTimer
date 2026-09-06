@@ -81,7 +81,6 @@ const I18N = {
     "timer.edit": "Редагувати",
     "timer.addStar": "Додати в обране",
     "timer.removeStar": "Прибрати з обраного",
-    "timer.paused": "Пауза",
     "dialog.close": "Закрити",
     "dialog.editTitle": "Редагувати",
     "dialog.newTitle": "Новий таймер",
@@ -100,6 +99,7 @@ const I18N = {
     "dialog.save": "Зберегти",
     "validation.time": "Вкажіть час у форматі 00:00-23:59 або 24:00.",
     "validation.date": "Введіть дату у форматі yyyy-mm-dd.",
+    "validation.localTime": "Цього часу немає у вибраній даті через переведення годинника. Вкажіть інший час.",
     "validation.duration": "Вкажіть тривалість від 0:01 до 8760:00.",
     "notification.expiredTitle": "MultiTimer",
     "notification.expiredBody": "Час вийшов: {title}",
@@ -152,7 +152,6 @@ const I18N = {
     "timer.edit": "Edit",
     "timer.addStar": "Add to starred",
     "timer.removeStar": "Remove from starred",
-    "timer.paused": "Paused",
     "dialog.close": "Close",
     "dialog.editTitle": "Edit",
     "dialog.newTitle": "New timer",
@@ -171,6 +170,7 @@ const I18N = {
     "dialog.save": "Save",
     "validation.time": "Enter time as 00:00-23:59 or 24:00.",
     "validation.date": "Enter date as yyyy-mm-dd.",
+    "validation.localTime": "This time does not exist on the selected date because the clocks change. Choose another time.",
     "validation.duration": "Enter a duration from 0:01 to 8760:00.",
     "notification.expiredTitle": "MultiTimer",
     "notification.expiredBody": "Time is up: {title}",
@@ -217,6 +217,7 @@ const targetTimeField = document.querySelector("#targetTimeField");
 const state = loadState();
 let editingTimerId = null;
 let audioContext = null;
+const alarmPlaybacks = new Set();
 let lastPageSignalMode = null;
 let neutralFaviconHref = null;
 let activeFaviconHref = null;
@@ -274,6 +275,13 @@ function loadState() {
     const timers = Array.isArray(parsedState.timers)
       ? parsedState.timers.map((timer) => normalizeTimer(timer, defaultTitle)).filter(Boolean)
       : [];
+    const usedIds = new Set();
+    for (const timer of timers) {
+      while (!timer.id || usedIds.has(timer.id)) {
+        timer.id = createId();
+      }
+      usedIds.add(timer.id);
+    }
 
     return {
       settings: normalizedSettings,
@@ -285,7 +293,7 @@ function loadState() {
 }
 
 function normalizeSettings(settings) {
-  const ringtone = RINGTONES[settings.ringtone] ? settings.ringtone : "classic";
+  const ringtone = Object.hasOwn(RINGTONES, settings.ringtone) ? settings.ringtone : "classic";
   const sortDirection = settings.sortDirection === "desc" ? "desc" : "asc";
   const language = settings.language === "en" ? "en" : "uk";
 
@@ -356,7 +364,7 @@ function getElementsForLocalization(root, selector) {
 }
 
 function normalizeTimer(timer, defaultTitle = DEFAULT_TITLE) {
-  if (!timer || typeof timer !== "object") {
+  if (!timer || typeof timer !== "object" || Array.isArray(timer)) {
     return null;
   }
 
@@ -371,18 +379,23 @@ function normalizeTimer(timer, defaultTitle = DEFAULT_TITLE) {
   const fallbackTargetAt = mode === "duration"
     ? Date.now() + durationMinutes * 60 * 1000
     : defaultTargetAt;
-  const targetTime = isValidTime(timer.targetTime)
+  const savedTargetAt = isValidTimestamp(timer.targetAt) ? timer.targetAt : null;
+  let targetTime = isValidTime(timer.targetTime)
     ? timer.targetTime
-    : getTimeInputValue(fallbackTargetAt);
-  const fallbackTargetDate = Number.isFinite(timer.targetAt)
-    ? getDateInputValue(timer.targetAt)
-    : getDateInputValue(defaultTargetAt);
-  const targetDate = isValidDate(timer.targetDate) ? timer.targetDate : fallbackTargetDate;
-  const targetAt =
-    Number.isFinite(timer.targetAt) && timer.targetAt > 0
-      ? timer.targetAt
+    : getTimeInputValue(savedTargetAt ?? fallbackTargetAt);
+  const fallbackTargetDate = getDateInputValue(savedTargetAt ?? defaultTargetAt);
+  let targetDate = isValidDate(timer.targetDate) ? timer.targetDate : fallbackTargetDate;
+  const candidateTargetAt =
+    savedTargetAt !== null
+      ? savedTargetAt
       : calculateTargetAt({ mode, durationMinutes, targetDate, targetTime });
-  const pausedRemainingMs = Number.isFinite(timer.pausedRemainingMs)
+  const targetAt = isValidTimestamp(candidateTargetAt) ? candidateTargetAt : fallbackTargetAt;
+  if (!isValidTimestamp(candidateTargetAt)) {
+    targetDate = getDateInputValue(targetAt);
+    targetTime = getTimeInputValue(targetAt);
+  }
+  const pausedRemainingMs = Number.isFinite(timer.pausedRemainingMs) &&
+      isValidTimestamp(Date.now() + timer.pausedRemainingMs)
     ? timer.pausedRemainingMs
     : null;
 
@@ -526,13 +539,21 @@ function isValidDate(value) {
   }
 
   const [year, month, day] = value.split("-").map(Number);
-  const date = new Date(year, month - 1, day);
+  const date = new Date(0);
+  date.setFullYear(year, month - 1, day);
+  date.setHours(0, 0, 0, 0);
 
   return (
     date.getFullYear() === year &&
     date.getMonth() === month - 1 &&
     date.getDate() === day
   );
+}
+
+function isValidTimestamp(value) {
+  if (!Number.isFinite(value)) return false;
+  const year = new Date(value).getFullYear();
+  return year >= 0 && year <= 9999;
 }
 
 function calculateTargetAt({ mode, durationMinutes, targetDate, targetTime }) {
@@ -546,7 +567,9 @@ function calculateTargetAt({ mode, durationMinutes, targetDate, targetTime }) {
 function getTargetTimestamp(dateValue, timeValue) {
   const [year, month, day] = dateValue.split("-").map(Number);
   const [hours, minutes] = timeValue.split(":").map(Number);
-  const target = new Date(year, month - 1, day, 0, 0, 0, 0);
+  const target = new Date(0);
+  target.setFullYear(year, month - 1, day);
+  target.setHours(0, 0, 0, 0);
 
   if (hours === 24) {
     target.setDate(target.getDate() + 1);
@@ -606,7 +629,6 @@ function renderTimers({ sort = state.settings.autoSort } = {}) {
       deactivateButton,
       editButton,
       starButton,
-      dragHandle,
     };
 
     row.dataset.timerId = timer.id;
@@ -679,29 +701,29 @@ function createTimerGroupHeader(labelKey) {
   return header;
 }
 
-function sortTimersPreservingDeactivated() {
-  arrangeTimers({ sort: true });
-}
-
 function arrangeTimers({ sort }) {
+  const now = Date.now();
   const starredTimers = arrangeTimerGroup(
     state.timers.filter((timer) => timer.starred),
     sort,
+    now,
   );
   const regularTimers = arrangeTimerGroup(
     state.timers.filter((timer) => !timer.starred),
     sort,
+    now,
   );
 
-  state.timers.splice(0, state.timers.length, ...starredTimers, ...regularTimers);
+  const arrangedTimers = [...starredTimers, ...regularTimers];
+  const changed = arrangedTimers.some((timer, index) => timer !== state.timers[index]);
+  if (changed) state.timers = arrangedTimers;
+  return changed;
 }
 
-function arrangeTimerGroup(timers, sort) {
+function arrangeTimerGroup(timers, sort, now) {
+  if (!sort) return timers;
   const sortableTimers = timers.filter((timer) => !timer.deactivated);
-
-  if (sort) {
-    sortableTimers.sort(compareTimerTime);
-  }
+  sortableTimers.sort((first, second) => compareTimerTime(first, second, now));
 
   let nextSortableIndex = 0;
   return timers.map((timer) => {
@@ -715,28 +737,16 @@ function arrangeTimerGroup(timers, sort) {
   });
 }
 
-function compareTimerTime(first, second) {
+function compareTimerTime(first, second, now) {
   const direction = state.settings.sortDirection === "desc" ? -1 : 1;
-  const firstSortAt = getSortAt(first);
-  const secondSortAt = getSortAt(second);
+  const firstSortAt = getRemainingMs(first, now);
+  const secondSortAt = getRemainingMs(second, now);
 
   if (firstSortAt !== secondSortAt) {
     return (firstSortAt - secondSortAt) * direction;
   }
 
   return first.createdAt - second.createdAt;
-}
-
-function getSortAt(timer) {
-  if (isPaused(timer)) {
-    if (timer.mode === "targetTime") {
-      return getTargetTimerResumeAt(timer);
-    }
-
-    return Date.now() + timer.pausedRemainingMs;
-  }
-
-  return timer.targetAt;
 }
 
 function startDraggingTimer(event, timerId, row) {
@@ -780,18 +790,22 @@ function handleTimerListDrop(event) {
   }
 
   event.preventDefault();
-  const beforeId = dropMarker.nextElementSibling?.dataset.timerId || null;
+  let nextRow = dropMarker.nextElementSibling;
+  while (nextRow && !nextRow.dataset.timerId) nextRow = nextRow.nextElementSibling;
+  const beforeId = nextRow?.dataset.timerId || null;
 
   moveTimerBefore(draggedTimerId, beforeId);
   finishDraggingTimer();
-  saveState();
   renderTimers({ sort: false });
+  saveState();
 }
 
 function getDragAfterElement(clientY) {
-  const rows = [...timerList.querySelectorAll(".timer-row:not(.is-dragging)")];
+  const draggedTimer = findTimer(draggedTimerId);
+  const rows = [...timerList.querySelectorAll(".timer-row:not(.is-dragging)")]
+    .filter((row) => findTimer(row.dataset.timerId)?.starred === draggedTimer?.starred);
 
-  return rows.reduce(
+  const nextRow = rows.reduce(
     (closest, row) => {
       const box = row.getBoundingClientRect();
       const offset = clientY - box.top - box.height / 2;
@@ -804,6 +818,8 @@ function getDragAfterElement(clientY) {
     },
     { offset: Number.NEGATIVE_INFINITY, row: null },
   ).row;
+  if (nextRow || !draggedTimer?.starred) return nextRow;
+  return timerList.querySelector(".timer-group-header[data-i18n='sections.otherTimers']");
 }
 
 function moveTimerBefore(timerId, beforeId) {
@@ -830,8 +846,6 @@ function updateTimers({
   timerIdsToProcess = null,
 } = {}) {
   const now = Date.now();
-  let shouldSave = false;
-  let shouldPlayAlarm = false;
   const expiredTimers = [];
 
   state.timers.forEach((timer) => {
@@ -845,8 +859,6 @@ function updateTimers({
       !timer.alarmed
     ) {
       timer.alarmed = true;
-      shouldSave = true;
-      shouldPlayAlarm = true;
       expiredTimers.push(timer);
     }
 
@@ -854,13 +866,11 @@ function updateTimers({
   });
 
   updatePageSignal();
+  updateAlarmPlayback();
 
-  if (shouldSave) {
+  if (expiredTimers.length > 0) {
     saveState();
-  }
-
-  if (shouldPlayAlarm) {
-    playAlarm();
+    playAlarm(expiredTimers);
   }
 
   expiredTimers
@@ -873,11 +883,46 @@ function updateTimers({
 function refreshTimers() {
   const now = Date.now();
 
+  if (state.settings.autoSort && arrangeTimers({ sort: true })) {
+    syncTimerRowOrder();
+    saveState();
+  }
+
   state.timers.forEach((timer) => {
     updateTimerRow(timer, getRemainingMs(timer, now));
   });
 
   updatePageSignal();
+
+  // A clock change can make a wall-clock deadline precede the scheduled timeout.
+  if (state.timers.some((timer) => (
+    !isPaused(timer) && !timer.deactivated && !timer.alarmed && timer.targetAt <= now
+  ))) {
+    checkTimersAfterPageResume();
+  }
+}
+
+function syncTimerRowOrder() {
+  const focusedInput = document.activeElement;
+  const selection = focusedInput?.classList.contains("timer-title")
+    ? [focusedInput.selectionStart, focusedInput.selectionEnd, focusedInput.selectionDirection]
+    : null;
+  let cursor = timerList.firstElementChild;
+  for (const timer of state.timers) {
+    while (cursor && !cursor.dataset.timerId) cursor = cursor.nextElementSibling;
+    const row = rowById.get(timer.id).row;
+    if (row === cursor) {
+      cursor = cursor.nextElementSibling;
+    } else if (timerList.moveBefore) {
+      timerList.moveBefore(row, cursor);
+    } else {
+      timerList.insertBefore(row, cursor);
+    }
+  }
+  if (selection && document.activeElement !== focusedInput) {
+    focusedInput.focus({ preventScroll: true });
+    focusedInput.setSelectionRange(...selection);
+  }
 }
 
 function updateTimerRow(timer, remainingMs) {
@@ -964,7 +1009,7 @@ function isPaused(timer) {
 }
 
 function formatDuration(ms) {
-  const totalSeconds = Math.floor(Math.abs(ms) / 1000);
+  const totalSeconds = ms > 0 ? Math.ceil(ms / 1000) : Math.floor(Math.abs(ms) / 1000);
   const days = Math.floor(totalSeconds / 86400);
   const hours = Math.floor((totalSeconds % 86400) / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -979,7 +1024,7 @@ function formatDuration(ms) {
 
 function formatSpecifiedValue(timer) {
   if (timer.mode === "targetTime") {
-    return `${formatDateShort(timer.targetDate)} ${timer.targetTime}`;
+    return `${timer.targetDate} ${timer.targetTime}`;
   }
 
   return formatDurationSetting(timer.durationMinutes);
@@ -996,14 +1041,6 @@ function formatDurationSetting(totalMinutes) {
   const minutes = durationMinutes % 60;
 
   return `${hours}:${String(minutes).padStart(2, "0")}`;
-}
-
-function formatDateShort(value) {
-  if (!isValidDate(value)) {
-    return "";
-  }
-
-  return value;
 }
 
 function formatDateTimeLocal(timestamp) {
@@ -1023,8 +1060,8 @@ function togglePauseTimer(timerId) {
     pauseTimer(timer);
   }
 
-  saveState();
   renderTimers();
+  saveState();
 }
 
 function pauseTimer(timer) {
@@ -1076,8 +1113,8 @@ function resetDurationTimer(timerId) {
   timer.pausedRemainingMs = null;
   timer.deactivated = false;
   timer.alarmed = false;
-  saveState();
   renderTimers();
+  saveState();
 }
 
 function openTimerEditDialog(timerId) {
@@ -1112,18 +1149,8 @@ function rescheduleTargetTimerNextDay(timerId) {
   setTargetTimerAt(timer, nextTarget.getTime());
   timer.deactivated = false;
   timer.alarmed = false;
-  saveState();
   renderTimers();
-}
-
-function getTargetTimerResumeAt(timer, now = Date.now()) {
-  const targetAt = getTargetTimestamp(timer.targetDate, timer.targetTime);
-
-  if (targetAt > now) {
-    return targetAt;
-  }
-
-  return getNextSameLocalTime(targetAt, now).getTime();
+  saveState();
 }
 
 function setTargetTimerAt(timer, timestamp) {
@@ -1133,11 +1160,12 @@ function setTargetTimerAt(timer, timestamp) {
 }
 
 function getNextSameLocalTime(timestamp, now = Date.now()) {
-  const nextTarget = new Date(timestamp);
-
-  do {
+  const original = new Date(timestamp);
+  const nextTarget = new Date(Math.max(timestamp, now));
+  nextTarget.setHours(original.getHours(), original.getMinutes(), 0, 0);
+  if (nextTarget.getTime() <= now || nextTarget.getTime() <= timestamp) {
     nextTarget.setDate(nextTarget.getDate() + 1);
-  } while (nextTarget.getTime() <= now);
+  }
 
   return nextTarget;
 }
@@ -1157,8 +1185,8 @@ function toggleDeactivated(timerId) {
     timer.alarmed = false;
   }
 
-  saveState();
   renderTimers();
+  saveState();
 }
 
 function toggleStarred(timerId) {
@@ -1169,8 +1197,8 @@ function toggleStarred(timerId) {
   }
 
   timer.starred = !timer.starred;
-  saveState();
   renderTimers();
+  saveState();
 }
 
 function deleteTimer(timerId) {
@@ -1181,8 +1209,8 @@ function deleteTimer(timerId) {
   }
 
   state.timers.splice(timerIndex, 1);
-  saveState();
   renderTimers();
+  saveState();
 }
 
 function findTimer(timerId) {
@@ -1231,15 +1259,7 @@ function openEditDialog(timerId = null, initialValues = {}) {
 }
 
 function getDefaultTargetTimestamp(now = Date.now()) {
-  const target = new Date(now);
-
-  target.setSeconds(0, 0);
-
-  if (target.getTime() <= now) {
-    target.setMinutes(target.getMinutes() + 1);
-  }
-
-  return target.getTime();
+  return Math.floor(now / 60000) * 60000 + 60000;
 }
 
 function closeEditDialog() {
@@ -1276,9 +1296,9 @@ function saveEditFromDialog() {
     }
   }
 
-  saveState();
   closeEditDialog();
   renderTimers();
+  saveState();
 }
 
 function hasTimerTimeChanged(timer, formTimer) {
@@ -1414,16 +1434,23 @@ function normalizeTargetFields() {
 function validateTargetFields() {
   const isTargetMode = timerForm.elements.timerMode.value === "targetTime";
   const targetTime = getEditTargetTime();
-  const [hours, minutes] = targetTime.split(":").map(Number);
   let timeMessage = "";
   let dateMessage = "";
 
-  if (isTargetMode && (!isValidTime(targetTime) || (hours === 24 && minutes !== 0))) {
+  if (isTargetMode && !isValidTime(targetTime)) {
     timeMessage = t("validation.time");
   }
 
   if (isTargetMode && !isValidDate(editTargetDate.value)) {
     dateMessage = t("validation.date");
+  }
+  if (isTargetMode && !timeMessage && !dateMessage) {
+    const targetAt = getTargetTimestamp(editTargetDate.value, targetTime);
+    if (!isValidTimestamp(targetAt)) {
+      dateMessage = t("validation.date");
+    } else if (getTimeInputValue(targetAt) !== (targetTime === "24:00" ? "00:00" : targetTime)) {
+      timeMessage = t("validation.localTime");
+    }
   }
 
   editTargetHours.setCustomValidity(timeMessage);
@@ -1482,7 +1509,7 @@ function getTimeInputValue(timestamp) {
 
 function getDateInputValue(timestamp) {
   const date = new Date(timestamp);
-  const year = date.getFullYear();
+  const year = String(date.getFullYear()).padStart(4, "0");
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
 
@@ -1495,6 +1522,8 @@ function updateToolbarUi() {
   applyLocalization();
   if (timerDialog.open) {
     dialogTitle.textContent = editingTimerId ? t("dialog.editTitle") : t("dialog.newTitle");
+    validateDurationFields();
+    validateTargetFields();
   }
   languageSelect.value = getLanguage();
   volumeRange.value = String(volumePercent);
@@ -1540,24 +1569,27 @@ function ensureAudioContext() {
     return null;
   }
 
-  if (!audioContext) {
-    audioContext = new AudioContextConstructor();
-  }
+  try {
+    if (!audioContext || audioContext.state === "closed") {
+      audioContext = new AudioContextConstructor();
+    }
 
-  if (audioContext.state === "suspended") {
-    audioContext.resume().catch(() => {});
+    if (audioContext.state === "suspended") {
+      audioContext.resume().catch(() => {});
+    }
+  } catch {
+    return null;
   }
 
   return audioContext;
 }
 
-function playAlarm() {
+function playAlarm(timers = []) {
   const volume = clampVolume(state.settings.volume);
+  if (volume === 0 || state.settings.muted) return;
   const context = ensureAudioContext();
 
-  if (!context || volume === 0 || state.settings.muted) {
-    return;
-  }
+  if (!context) return;
 
   const ringtone = RINGTONES[state.settings.ringtone] || RINGTONES.classic;
   const duration = clampInteger(
@@ -1568,22 +1600,69 @@ function playAlarm() {
   );
   const startAt = context.currentTime + 0.03;
   const endAt = startAt + duration;
-  let time = startAt;
+  const playback = {
+    timers: timers.map((timer) => ({ id: timer.id, targetAt: timer.targetAt })),
+    nodes: new Set(),
+    output: null,
+  };
 
-  while (time < endAt) {
-    for (const frequency of ringtone.frequencies) {
-      if (time >= endAt) {
-        break;
+  // Repeated previews replace each other; independent timer alarms retain their owners.
+  if (timers.length === 0) {
+    for (const previous of alarmPlaybacks) {
+      if (previous.timers.length === 0) stopAlarmPlayback(previous);
+    }
+  }
+  try {
+    playback.output = context.createGain();
+    playback.output.gain.setValueAtTime(volume, context.currentTime);
+    playback.output.connect(context.destination);
+    alarmPlaybacks.add(playback);
+    let time = startAt;
+    while (time < endAt) {
+      for (const frequency of ringtone.frequencies) {
+        if (time >= endAt) break;
+        scheduleBeep(context, {
+          playback,
+          frequency,
+          gainValue: ringtone.gain,
+          noteLength: Math.min(ringtone.note, endAt - time),
+          startAt: time,
+          type: ringtone.type,
+        });
+        time += ringtone.step;
       }
+    }
+  } catch {
+    stopAlarmPlayback(playback);
+  }
+}
 
-      scheduleBeep(context, {
-        frequency,
-        gainValue: volume * ringtone.gain,
-        noteLength: Math.min(ringtone.note, endAt - time),
-        startAt: time,
-        type: ringtone.type,
-      });
-      time += ringtone.step;
+function stopAlarmPlayback(playback) {
+  for (const { oscillator, gain } of playback.nodes) {
+    oscillator.onended = null;
+    try {
+      oscillator.stop(audioContext.currentTime);
+    } catch {
+      // Setup may have failed before the oscillator was started.
+    }
+    oscillator.disconnect();
+    gain.disconnect();
+  }
+  playback.nodes.clear();
+  playback.output?.disconnect();
+  alarmPlaybacks.delete(playback);
+}
+
+function updateAlarmPlayback() {
+  for (const playback of alarmPlaybacks) {
+    const hasUnprocessedTimer = playback.timers.some(({ id, targetAt }) => {
+      const timer = findTimer(id);
+      return timer && timer.targetAt === targetAt && !timer.deactivated && !isPaused(timer);
+    });
+    if (state.settings.muted || (playback.timers.length > 0 && !hasUnprocessedTimer)) {
+      stopAlarmPlayback(playback);
+    } else {
+      playback.output.gain.setValueAtTime(clampVolume(state.settings.volume), audioContext.currentTime);
     }
   }
 }
@@ -1675,8 +1754,7 @@ function createAlarmSchedulerWorker() {
         const notification = new Notification(timer.notificationTitle, {
           body: timer.notificationBody,
           icon: timer.icon,
-          renotify: true,
-          tag: "multitimer-" + timer.id,
+          tag: "multitimer-" + timer.id + "-" + timer.targetAt,
           timestamp: timer.targetAt,
         });
 
@@ -1691,13 +1769,13 @@ function createAlarmSchedulerWorker() {
     }
   `;
 
+  let workerUrl;
   try {
-    const workerUrl = URL.createObjectURL(new Blob([workerSource], {
+    workerUrl = URL.createObjectURL(new Blob([workerSource], {
       type: "text/javascript",
     }));
     const worker = new Worker(workerUrl, { name: "multitimer-alarm-scheduler" });
 
-    URL.revokeObjectURL(workerUrl);
     worker.addEventListener("message", handleAlarmSchedulerMessage);
     worker.addEventListener("error", () => {
       if (alarmSchedulerWorker !== worker) {
@@ -1712,6 +1790,8 @@ function createAlarmSchedulerWorker() {
     return worker;
   } catch {
     return null;
+  } finally {
+    if (workerUrl) URL.revokeObjectURL(workerUrl);
   }
 }
 
@@ -1804,7 +1884,7 @@ function scheduleFallbackAlarm(targetAt) {
   const remainingMs = Math.max(0, targetAt - Date.now());
   const delay = Math.min(
     MAX_TIMEOUT_MS,
-    remainingMs + ALARM_FALLBACK_GRACE_MS,
+    remainingMs + (alarmSchedulerWorker ? ALARM_FALLBACK_GRACE_MS : 0),
   );
 
   alarmFallbackTimeoutId = setTimeout(() => {
@@ -1871,9 +1951,8 @@ function notifyTimerExpired(timer) {
     const notification = new Notification(t("notification.expiredTitle"), {
       body: t("notification.expiredBody").replace("{title}", timer.title),
       icon: overdueFaviconHref,
-      renotify: true,
-      tag: `multitimer-${timer.id}`,
-      timestamp: Date.now(),
+      tag: `multitimer-${timer.id}-${timer.targetAt}`,
+      timestamp: timer.targetAt,
     });
 
     notification.onclick = () => {
@@ -1885,7 +1964,7 @@ function notifyTimerExpired(timer) {
   }
 }
 
-function scheduleBeep(context, { frequency, gainValue, noteLength, startAt, type }) {
+function scheduleBeep(context, { playback, frequency, gainValue, noteLength, startAt, type }) {
   const oscillator = context.createOscillator();
   const gain = context.createGain();
   const stopAt = startAt + noteLength;
@@ -1893,10 +1972,21 @@ function scheduleBeep(context, { frequency, gainValue, noteLength, startAt, type
   oscillator.type = type;
   oscillator.frequency.setValueAtTime(frequency, startAt);
   oscillator.connect(gain);
-  gain.connect(context.destination);
+  gain.connect(playback.output);
+  const node = { oscillator, gain };
+  playback.nodes.add(node);
+  oscillator.onended = () => {
+    oscillator.disconnect();
+    gain.disconnect();
+    playback.nodes.delete(node);
+    if (playback.nodes.size === 0) {
+      playback.output.disconnect();
+      alarmPlaybacks.delete(playback);
+    }
+  };
 
   gain.gain.setValueAtTime(0.0001, startAt);
-  gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, gainValue), startAt + 0.018);
+  gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, gainValue), startAt + Math.min(0.018, noteLength / 2));
   gain.gain.exponentialRampToValueAtTime(0.0001, stopAt);
 
   oscillator.start(startAt);
@@ -1987,7 +2077,7 @@ function createFavicon(color, hasDot) {
 function updateSetting(updater, { render = true } = {}) {
   updater(state.settings);
   state.settings = normalizeSettings(state.settings);
-  saveState();
+  updateAlarmPlayback();
 
   if (render) {
     renderTimers();
@@ -1995,6 +2085,7 @@ function updateSetting(updater, { render = true } = {}) {
     updateToolbarUi();
     syncAlarmScheduler();
   }
+  saveState();
 }
 
 addTimerButton.addEventListener("click", () => {
@@ -2060,14 +2151,14 @@ sortNowButton.addEventListener("click", () => {
     return;
   }
 
-  sortTimersPreservingDeactivated();
+  arrangeTimers({ sort: true });
   saveState();
   renderTimers({ sort: false });
 });
 
 ringtoneSelect.addEventListener("change", () => {
   updateSetting((settings) => {
-    settings.ringtone = RINGTONES[ringtoneSelect.value] ? ringtoneSelect.value : "classic";
+    settings.ringtone = ringtoneSelect.value;
   }, { render: false });
 });
 
@@ -2124,12 +2215,13 @@ document.querySelectorAll("input[name='timerMode']").forEach((input) => {
 });
 
 editTargetDate.addEventListener("input", () => {
-  const isCursorAtEnd = editTargetDate.selectionStart === editTargetDate.value.length;
-
-  editTargetDate.value = formatDateInputDraft(editTargetDate.value);
-
-  if (isCursorAtEnd) {
-    editTargetDate.setSelectionRange(editTargetDate.value.length, editTargetDate.value.length);
+  const draft = editTargetDate.value;
+  const caret = editTargetDate.selectionStart;
+  editTargetDate.value = formatDateInputDraft(draft);
+  if (caret !== null) {
+    const digitsBeforeCaret = draft.slice(0, caret).replace(/\D/g, "").length;
+    const position = digitsBeforeCaret + (digitsBeforeCaret > 4 ? 1 : 0) + (digitsBeforeCaret > 6 ? 1 : 0);
+    editTargetDate.setSelectionRange(position, position);
   }
 
   if (isValidDate(editTargetDate.value)) {
