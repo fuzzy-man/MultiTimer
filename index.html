@@ -13,7 +13,7 @@
           <div class="brand">
             <p class="eyebrow">
               <span>MultiTimer</span>
-              <span class="version-badge">v1.2.1</span>
+              <span class="version-badge">v1.2.2</span>
             </p>
             <h1 data-i18n="app.title">Мульти таймери</h1>
           </div>
@@ -26,19 +26,8 @@
                 <option value="en">EN</option>
               </select>
             </label>
-            <label class="volume-control" for="volumeRange">
-              <span data-i18n="controls.volume">Гучність</span>
-              <input id="volumeRange" type="range" min="0" max="100" step="1" />
-              <output id="volumeValue" for="volumeRange">55%</output>
-            </label>
-            <button class="secondary-button" id="muteButton" type="button" aria-pressed="false">
-              Mute
-            </button>
             <button class="secondary-button" id="notificationsButton" type="button" aria-pressed="false">
               <span data-i18n="controls.notificationsEnable">Увімкнути сповіщення</span>
-            </button>
-            <button class="secondary-button" id="testAlarmButton" type="button">
-              <span data-i18n="controls.test">Тест</span>
             </button>
             <button class="primary-button" id="addTimerButton" type="button">
               <span data-i18n="controls.addTimer">Додати таймер</span>
@@ -47,41 +36,52 @@
         </header>
 
         <section class="control-panel" aria-label="Налаштування таймерів" data-i18n-aria-label="sections.timerSettings">
-          <label class="toggle-control" for="autoSortToggle">
-            <input id="autoSortToggle" type="checkbox" />
-            <span data-i18n="controls.autoSort">Автосортування</span>
-          </label>
+          <div class="sort-controls">
+            <label class="toggle-control" for="autoSortToggle">
+              <input id="autoSortToggle" type="checkbox" />
+              <span data-i18n="controls.autoSort">Автосортування</span>
+            </label>
+            <button class="secondary-button" id="sortNowButton" type="button">
+              <span data-i18n="controls.sortNow">Сортувати</span>
+            </button>
+            <label class="select-control" for="sortDirectionSelect">
+              <span data-i18n="controls.direction">Напрям</span>
+              <select id="sortDirectionSelect">
+                <option value="asc" data-i18n="sort.asc">Менші зверху</option>
+                <option value="desc" data-i18n="sort.desc">Більші зверху</option>
+              </select>
+            </label>
+            <label class="number-control" for="warningMinutes">
+              <span data-i18n="controls.warningMinutes">Попередження, хв</span>
+              <input id="warningMinutes" type="number" min="1" max="1440" step="1" inputmode="numeric" />
+            </label>
+          </div>
 
-          <button class="secondary-button" id="sortNowButton" type="button">
-            <span data-i18n="controls.sortNow">Сортувати</span>
-          </button>
-
-          <label class="select-control" for="sortDirectionSelect">
-            <span data-i18n="controls.direction">Напрям</span>
-            <select id="sortDirectionSelect">
-              <option value="asc" data-i18n="sort.asc">Менші зверху</option>
-              <option value="desc" data-i18n="sort.desc">Більші зверху</option>
-            </select>
-          </label>
-
-          <label class="select-control" for="ringtoneSelect">
-            <span data-i18n="controls.ringtone">Рингтон</span>
-            <select id="ringtoneSelect">
-              <option value="classic" data-i18n="ringtone.classic">Старий будильник</option>
-              <option value="digital" data-i18n="ringtone.digital">Цифровий</option>
-              <option value="soft" data-i18n="ringtone.soft">М'який</option>
-            </select>
-          </label>
-
-          <label class="number-control" for="alarmDurationSeconds">
-            <span data-i18n="controls.alarmSeconds">Сигнал, с</span>
-            <input id="alarmDurationSeconds" type="number" min="1" max="60" step="1" inputmode="numeric" />
-          </label>
-
-          <label class="number-control" for="warningMinutes">
-            <span data-i18n="controls.warningMinutes">Попередження, хв</span>
-            <input id="warningMinutes" type="number" min="1" max="1440" step="1" inputmode="numeric" />
-          </label>
+          <div class="audio-controls">
+            <label class="volume-control" for="volumeRange">
+              <span data-i18n="controls.volume">Гучність</span>
+              <output id="volumeValue" for="volumeRange">55%</output>
+              <input id="volumeRange" type="range" min="0" max="100" step="1" />
+            </label>
+            <button class="secondary-button" id="muteButton" type="button" aria-pressed="false">
+              Mute
+            </button>
+            <label class="select-control" for="ringtoneSelect">
+              <span data-i18n="controls.ringtone">Рингтон</span>
+              <select id="ringtoneSelect">
+                <option value="classic" data-i18n="ringtone.classic">Старий будильник</option>
+                <option value="digital" data-i18n="ringtone.digital">Цифровий</option>
+                <option value="soft" data-i18n="ringtone.soft">М'який</option>
+              </select>
+            </label>
+            <label class="number-control" for="alarmDurationSeconds">
+              <span data-i18n="controls.alarmSeconds">Сигнал, с</span>
+              <input id="alarmDurationSeconds" type="number" min="1" max="60" step="1" inputmode="numeric" />
+            </label>
+            <button class="secondary-button" id="testAlarmButton" type="button">
+              <span data-i18n="controls.test">Тест</span>
+            </button>
+          </div>
         </section>
       </div>
 

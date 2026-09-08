@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { chromium } from "npm:playwright@1.58.2";
 
+const basicUi = Deno.args.includes("--basic-ui");
+const languageFilter = Deno.args.find((arg) => arg.startsWith("--language="))?.slice(11);
+assert.ok(!languageFilter || ["uk", "en"].includes(languageFilter), "Unknown UI language");
 const browser = await chromium.launch({
   executablePath: Deno.args[0],
   headless: true,
@@ -15,7 +18,7 @@ try {
   const page = await context.newPage();
   page.on("pageerror", (error) => failures.push(error.message));
   await page.goto(new URL("../index.html", import.meta.url).href);
-  await page.evaluate(() => {
+  await page.evaluate((basic) => {
     const now = Date.now();
     state.settings.muted = true;
     state.settings.autoSort = false;
@@ -25,20 +28,58 @@ try {
       { id: "alarm", title: "Будильник / Alarm", mode: "targetTime", targetAt: now + 86400000 },
       { id: "overdue", title: "Оброблений / Deactivated", targetAt: now - 500 * 86400000, deactivated: true },
     ].map((timer) => normalizeTimer({ targetAt: now + 25 * 60000, ...timer }));
+    if (basic) {
+      for (let i = 0; i < 2; i++) {
+        state.timers.push(normalizeTimer({ id: `scroll-${i}`, title: `Timer ${i + 5}`, targetAt: now + 3600000 }));
+      }
+    }
     saveState();
     renderTimers();
-  });
+  }, basicUi);
 
-  for (const language of ["uk", "en"]) {
+  for (const language of ["uk", "en"].filter((value) => !languageFilter || value === languageFilter)) {
     await page.selectOption("#languageSelect", language);
-    for (const [width, height] of [[1440, 900], [1280, 800], [1024, 768], [720, 900], [390, 844], [320, 720]]) {
+    const sizes = basicUi
+      ? [language === "uk" ? [1280, 800] : [390, 844]]
+      : [[1440, 900], [1280, 800], [1024, 768], [720, 900], [390, 844], [320, 720]];
+    for (const [width, height] of sizes) {
       await page.setViewportSize({ width, height });
       await page.waitForTimeout(200);
       console.log(`Checking ${language} ${width}`);
-      await page.screenshot({ path: `${screenshots}/${language}-${width}.png`, fullPage: true });
+      await page.screenshot({ path: `${screenshots}/${language}-${width}.png`, fullPage: !basicUi });
       const overflow = await page.evaluate(() => {
         const issues = [];
         if (document.documentElement.scrollWidth > innerWidth) issues.push("page overflow");
+        const header = document.querySelector(".sticky-controls").getBoundingClientRect();
+        for (const section of document.querySelectorAll(".app-header, .control-panel")) {
+          const box = section.getBoundingClientRect();
+          if (box.left - header.left < 12 || header.right - box.right < 12) {
+            issues.push(`missing header inset: ${section.className}`);
+          }
+        }
+        const controls = [...document.querySelectorAll(".sticky-controls button, .sticky-controls input, .sticky-controls select")];
+        for (const [index, control] of controls.entries()) {
+          const box = control.getBoundingClientRect();
+          if (box.left < 0 || box.right > innerWidth || control.scrollWidth > control.clientWidth + 1) {
+            issues.push(`header overflow: ${control.id}`);
+          }
+          if (control.matches("select")) {
+            const style = getComputedStyle(control);
+            const canvas = document.createElement("canvas");
+            const context = canvas.getContext("2d");
+            context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+            const textWidth = context.measureText(control.selectedOptions[0].textContent).width;
+            const available = control.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+            if (textWidth > available) issues.push(`clipped option: ${control.id}`);
+          }
+          for (const other of controls.slice(index + 1)) {
+            const rect = other.getBoundingClientRect();
+            if (Math.min(box.right, rect.right) > Math.max(box.left, rect.left) + 1 &&
+                Math.min(box.bottom, rect.bottom) > Math.max(box.top, rect.top) + 1) {
+              issues.push(`overlapping controls: ${control.id}, ${other.id}`);
+            }
+          }
+        }
         for (const el of document.querySelectorAll(".timer-title, .timer-time, .meta-row, .timer-actions button")) {
           const box = el.getBoundingClientRect();
           if (box.width === 0) continue;
@@ -51,15 +92,21 @@ try {
         return issues;
       });
       failures.push(...overflow.map((issue) => `${language} ${width}: ${issue}`));
-      if (width === 320) {
-        await page.locator('[data-timer-id="overdue"]').scrollIntoViewIfNeeded();
+      if (basicUi || width === 320) {
+        await page.locator(".timer-row").last().scrollIntoViewIfNeeded();
         await page.waitForTimeout(200);
-        await page.screenshot({ path: `${screenshots}/${language}-${width}-scrolled.png` });
+        if (!basicUi) await page.screenshot({ path: `${screenshots}/${language}-${width}-scrolled.png` });
+        const headerVisible = await page.locator(".sticky-controls").evaluate((el) => {
+          const box = el.getBoundingClientRect();
+          return box.top >= -1 && box.bottom <= innerHeight;
+        });
+        assert.ok(headerVisible, "Sticky controls must remain accessible after scrolling");
         await page.evaluate(() => scrollTo(0, 0));
       }
 
-      await page.evaluate(() => openEditDialog("alarm"));
-      await page.screenshot({ path: `${screenshots}/${language}-${width}-dialog.png` });
+      if (basicUi) await page.click("#addTimerButton");
+      else await page.evaluate(() => openEditDialog("alarm"));
+      if (!basicUi) await page.screenshot({ path: `${screenshots}/${language}-${width}-dialog.png` });
       const dialogOverflow = await page.evaluate(() => {
         const dialog = document.querySelector("#timerDialog");
         const box = dialog.getBoundingClientRect();
@@ -74,6 +121,15 @@ try {
   }
 
   console.log(JSON.stringify({ layoutFailures: failures }, null, 2));
+  if (!basicUi) await checkExtendedInteractions(page);
+  await context.close();
+  console.log(JSON.stringify({ screenshots, failures }, null, 2));
+  assert.equal(failures.length, 0, "Browser checks found layout or runtime errors");
+} finally {
+  await browser.close();
+}
+
+async function checkExtendedInteractions(page) {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.clock.install();
   await page.reload();
@@ -142,9 +198,4 @@ try {
   const snapshot = await page.evaluate(() => localStorage.getItem("multitimer.state.v2"));
   await page.reload();
   assert.equal(await page.evaluate(() => localStorage.getItem("multitimer.state.v2")), snapshot);
-  await context.close();
-  console.log(JSON.stringify({ screenshots, failures }, null, 2));
-  assert.equal(failures.length, 0, "Browser checks found layout or runtime errors");
-} finally {
-  await browser.close();
 }
