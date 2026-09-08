@@ -43,6 +43,8 @@
 
 ## Перевірки
 
+Типова перевірка Codex виконується за коротким [TEST_PLAN.md](TEST_PLAN.md); обмеження обсягу й витрат та оновлення плану задано в [AGENTS.md](AGENTS.md).
+
 ```sh
 deno check src/app.js
 deno lint src/app.js tests/
@@ -51,7 +53,7 @@ deno test --allow-read=src/app.js,index.html tests/app-state.test.js
 
 37 регресійних тестів перевіряють відновлення стану, назви, обране, порядок, відлік, паузу, дати, звук, фоновий worker і резервний планувальник. Вони не використовують дані вашого браузера й не імітують фізичне вимкнення живлення.
 
-Для перевірки інтерфейсу у встановленому Chrome (приклад для Windows):
+Для окремо запитаної розширеної перевірки інтерфейсу у Chrome (не входить у BASIC, приклад для Windows):
 
 ```powershell
 .\deno.exe run --no-config --no-lock --allow-read --allow-write --allow-env --allow-run --allow-sys --allow-net tests/browser-smoke.js "C:/Program Files/Google/Chrome/Application/chrome.exe"
