@@ -9,6 +9,8 @@ const MAX_TIMEOUT_MS = 2147483647;
 const ALARM_FALLBACK_GRACE_MS = 2000;
 const ALARM_WORKER_RESPONSE_GRACE_MS = 500;
 const PAUSED_TARGET_LABEL = "—";
+const MAX_DELETION_HISTORY = 20;
+const DELETION_RETENTION_MS = 30 * 86400000;
 
 const RINGTONES = {
   classic: {
@@ -52,6 +54,10 @@ const I18N = {
     "controls.notificationsBlocked": "Сповіщення заблоковані",
     "controls.notificationsUnavailable": "Сповіщення недоступні",
     "controls.clearAll": "Очистити всі таймери",
+    "history.title": "Видалені таймери",
+    "history.undo": "Скасувати останнє видалення",
+    "history.restore": "Відновити",
+    "history.empty": "Історія видалень порожня",
     "controls.mute": "Вимкнути",
     "controls.unmute": "Увімкнути",
     "sort.asc": "Менші зверху",
@@ -123,6 +129,10 @@ const I18N = {
     "controls.notificationsBlocked": "Notifications blocked",
     "controls.notificationsUnavailable": "Notifications unavailable",
     "controls.clearAll": "Clear all timers",
+    "history.title": "Deleted timers",
+    "history.undo": "Undo last deletion",
+    "history.restore": "Restore",
+    "history.empty": "No deleted timers",
     "controls.mute": "Mute",
     "controls.unmute": "Unmute",
     "sort.asc": "Smallest first",
@@ -183,6 +193,12 @@ const timerList = document.querySelector("#timerList");
 const emptyState = document.querySelector("#emptyState");
 const addTimerButton = document.querySelector("#addTimerButton");
 const clearAllButton = document.querySelector("#clearAllButton");
+const undoDeleteButton = document.querySelector("#undoDeleteButton");
+const deletionHistoryButton = document.querySelector("#deletionHistoryButton");
+const deletionHistoryDialog = document.querySelector("#deletionHistoryDialog");
+const deletionHistoryList = document.querySelector("#deletionHistoryList");
+const deletionHistoryEmpty = document.querySelector("#deletionHistoryEmpty");
+const deletionHistoryClose = document.querySelector("#deletionHistoryClose");
 const timerTemplate = document.querySelector("#timerTemplate");
 const volumeRange = document.querySelector("#volumeRange");
 const volumeValue = document.querySelector("#volumeValue");
@@ -248,6 +264,7 @@ function createDefaultState() {
       desktopNotificationsEnabled: false,
     },
     timers: [],
+    deletionHistory: [],
   };
 }
 
@@ -286,6 +303,7 @@ function loadState() {
     return {
       settings: normalizedSettings,
       timers,
+      deletionHistory: normalizeDeletionHistory(parsedState.deletionHistory, defaultTitle),
     };
   } catch {
     return createDefaultState();
@@ -420,6 +438,104 @@ function saveState() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch {
     // localStorage can be unavailable in strict privacy modes.
+  }
+}
+
+function normalizeDeletionHistory(history, defaultTitle = DEFAULT_TITLE) {
+  const now = Date.now();
+  if (!Array.isArray(history)) return [];
+  return history.filter((entry) => entry && typeof entry.id === "string" &&
+    Number.isFinite(entry.deletedAt) && entry.deletedAt >= now - DELETION_RETENTION_MS &&
+    entry.deletedAt <= now && Array.isArray(entry.items))
+    .slice(-MAX_DELETION_HISTORY).map((entry) => ({
+      id: entry.id,
+      deletedAt: entry.deletedAt,
+      items: entry.items.map((item) => {
+        const timer = normalizeTimer(item?.timer, defaultTitle);
+        return timer ? {
+          timer,
+          index: Number.isInteger(item.index) && item.index >= 0 ? item.index : 0,
+          beforeId: typeof item.beforeId === "string" ? item.beforeId : null,
+          afterId: typeof item.afterId === "string" ? item.afterId : null,
+        } : null;
+      }).filter(Boolean),
+    })).filter((entry) => entry.items.length > 0);
+}
+
+function recordDeletion(timers) {
+  state.deletionHistory = normalizeDeletionHistory(state.deletionHistory);
+  state.deletionHistory.push({
+    id: createId(),
+    deletedAt: Date.now(),
+    items: timers.map((timer) => {
+      const index = state.timers.indexOf(timer);
+      return {
+        timer: { ...timer },
+        index,
+        beforeId: state.timers[index - 1]?.id ?? null,
+        afterId: state.timers[index + 1]?.id ?? null,
+      };
+    }),
+  });
+  state.deletionHistory = state.deletionHistory.slice(-MAX_DELETION_HISTORY);
+}
+
+function restoreDeletion(entryId = null) {
+  state.deletionHistory = normalizeDeletionHistory(state.deletionHistory);
+  const index = entryId === null ? state.deletionHistory.length - 1
+    : state.deletionHistory.findIndex((entry) => entry.id === entryId);
+  if (index < 0) {
+    updateDeletionUi();
+    return;
+  }
+  const [entry] = state.deletionHistory.splice(index, 1);
+  const usedIds = new Set(state.timers.map((timer) => timer.id));
+  for (const item of entry.items.sort((a, b) => a.index - b.index)) {
+    const timer = { ...item.timer };
+    while (!timer.id || usedIds.has(timer.id)) timer.id = createId();
+    usedIds.add(timer.id);
+    // An old deadline remains visible, but restoring history must not replay its alarm.
+    if (!isPaused(timer) && timer.targetAt <= Date.now()) timer.alarmed = true;
+    const after = state.timers.findIndex((other) => other.id === item.afterId);
+    const before = state.timers.findIndex((other) => other.id === item.beforeId);
+    const position = after >= 0 ? after : before >= 0 ? before + 1
+      : Math.min(item.index, state.timers.length);
+    state.timers.splice(position, 0, timer);
+  }
+  renderTimers();
+  saveState();
+}
+
+function updateDeletionUi() {
+  state.deletionHistory = normalizeDeletionHistory(state.deletionHistory);
+  undoDeleteButton.disabled = state.deletionHistory.length === 0;
+  undoDeleteButton.title = t("history.undo");
+  deletionHistoryEmpty.hidden = state.deletionHistory.length > 0;
+  if (!deletionHistoryDialog.open) return;
+  deletionHistoryList.replaceChildren();
+  for (const entry of [...state.deletionHistory].reverse()) {
+    const row = document.createElement("li");
+    row.className = "deletion-entry";
+    const details = document.createElement("div");
+    const names = document.createElement("div");
+    names.className = "deletion-names";
+    names.textContent = entry.items.slice(0, 3).map((item) => item.timer.title).join(", ") +
+      (entry.items.length > 3 ? ` (+${entry.items.length - 3})` : "");
+    const date = document.createElement("time");
+    date.dateTime = new Date(entry.deletedAt).toISOString();
+    date.textContent = `${formatDateTimeLocal(entry.deletedAt)} · ${entry.items.length}`;
+    details.append(names);
+    details.append(date);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "icon-button restore-deletion";
+    button.textContent = "↶";
+    button.title = t("history.restore");
+    button.setAttribute("aria-label", `${t("history.restore")}: ${names.textContent}`);
+    button.addEventListener("click", () => restoreDeletion(entry.id));
+    row.append(details);
+    row.append(button);
+    deletionHistoryList.append(row);
   }
 }
 
@@ -588,6 +704,7 @@ function renderTimers({ sort = state.settings.autoSort } = {}) {
   timerList.replaceChildren();
   emptyState.hidden = state.timers.length > 0;
   clearAllButton.disabled = state.timers.length === 0;
+  updateDeletionUi();
 
   const hasStarredTimers = state.timers.some((timer) => timer.starred);
   let showedStarredGroup = false;
@@ -1208,6 +1325,7 @@ function deleteTimer(timerId) {
     return;
   }
 
+  recordDeletion([state.timers[timerIndex]]);
   state.timers.splice(timerIndex, 1);
   renderTimers();
   saveState();
@@ -1520,6 +1638,7 @@ function updateToolbarUi() {
   const volumePercent = Math.round(clampVolume(state.settings.volume) * 100);
 
   applyLocalization();
+  updateDeletionUi();
   if (timerDialog.open) {
     dialogTitle.textContent = editingTimerId ? t("dialog.editTitle") : t("dialog.newTitle");
     validateDurationFields();
@@ -2098,11 +2217,19 @@ clearAllButton.addEventListener("click", () => {
   }
 
   if (globalThis.confirm(t("confirm.clearAll"))) {
+    recordDeletion(state.timers);
     state.timers.splice(0, state.timers.length);
     saveState();
     renderTimers({ sort: false });
   }
 });
+
+undoDeleteButton.addEventListener("click", () => restoreDeletion());
+deletionHistoryButton.addEventListener("click", () => {
+  deletionHistoryDialog.showModal();
+  updateDeletionUi();
+});
+deletionHistoryClose.addEventListener("click", () => deletionHistoryDialog.close());
 
 timerList.addEventListener("dragover", handleTimerListDragOver);
 timerList.addEventListener("drop", handleTimerListDrop);

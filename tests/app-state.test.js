@@ -198,7 +198,7 @@ function createApp(savedState = fixtureState(), now = NOW, globals = {}) {
     state, rowById, findTimer, renderTimers, saveState, loadState,
     toggleStarred, togglePauseTimer, moveTimerBefore, getRemainingMs,
     refreshTimers, updateTimers, getPageSignalMode, toggleDeactivated,
-    resetDurationTimer, deleteTimer, openEditDialog, saveEditFromDialog,
+    resetDurationTimer, deleteTimer, restoreDeletion, openEditDialog, saveEditFromDialog,
     normalizeDurationFields, validateTargetFields, getTargetTimestamp,
     getDateInputValue, getTimeInputValue, getDefaultTargetTimestamp,
     getNextSameLocalTime, formatDuration, playAlarm, updateSetting,
@@ -224,6 +224,90 @@ function startGame(app) {
   app.saveState();
   app.renderTimers({ sort: false });
 }
+
+Deno.test("undo restores identity and deadline without reverting other edits", () => {
+  const app = createApp();
+  app.togglePauseTimer("game");
+  const original = JSON.parse(JSON.stringify(app.findTimer("game")));
+  app.deleteTimer("game");
+  app.findTimer("tea").title = "Updated tea";
+  app.state.settings.volume = 0.2;
+  app.setNow(NOW + 60000);
+  app.document.querySelector("#undoDeleteButton").dispatchEvent({ type: "click" });
+  assert.deepEqual(JSON.parse(JSON.stringify(app.findTimer("game"))), original);
+  assert.equal(app.getRemainingMs(app.findTimer("game")), 3540000);
+  assert.equal(app.findTimer("tea").title, "Updated tea");
+  assert.equal(app.state.settings.volume, 0.2);
+  assert.deepEqual(Array.from(app.state.timers, (timer) => timer.id), ["tea", "other", "game"]);
+  assert.equal(app.document.querySelector("#undoDeleteButton").disabled, true);
+  app.restoreDeletion();
+  assert.equal(app.state.timers.length, 3);
+});
+
+Deno.test("clear all is one persistent undo operation and cancelled clear creates no history", () => {
+  const app = createApp();
+  app.run("globalThis.confirm = () => false");
+  app.document.querySelector("#clearAllButton").dispatchEvent({ type: "click" });
+  assert.equal(app.state.deletionHistory.length, 0);
+  app.findTimer("other").deactivated = true;
+  app.run("globalThis.confirm = () => true");
+  app.document.querySelector("#clearAllButton").dispatchEvent({ type: "click" });
+  assert.equal(app.state.timers.length, 0);
+  assert.equal(app.state.deletionHistory.length, 1);
+  const restored = createApp(app.stored(), NOW + 60000);
+  restored.restoreDeletion();
+  assert.deepEqual(Array.from(restored.state.timers, (timer) => timer.id), ["tea", "other", "game"]);
+  assert.equal(restored.findTimer("tea").starred, true);
+  assert.equal(restored.findTimer("other").deactivated, true);
+  assert.equal(restored.findTimer("game").pausedRemainingMs, 3600000);
+  assert.equal(restored.stored().deletionHistory.length, 0);
+});
+
+Deno.test("history retains twenty operations for thirty days and ignores malformed entries", () => {
+  const app = createApp();
+  for (let i = 0; i < 22; i++) {
+    app.state.timers.push(fixtureTimer(`deleted-${i}`, `Timer ${i}`, 5));
+    app.deleteTimer(`deleted-${i}`);
+  }
+  const saved = app.stored();
+  assert.equal(saved.deletionHistory.length, 20);
+  assert.equal(saved.deletionHistory[0].items[0].timer.id, "deleted-2");
+  saved.deletionHistory.unshift(null);
+  saved.deletionHistory.push({ id: "bad", deletedAt: NOW, items: [null, { timer: null }] });
+  const loaded = createApp(saved);
+  assert.ok(loaded.state.deletionHistory.every((entry) => entry.items.length > 0));
+  const expired = createApp(saved, NOW + 31 * 86400000);
+  assert.equal(expired.state.deletionHistory.length, 0);
+  assert.equal(expired.document.querySelector("#undoDeleteButton").disabled, true);
+});
+
+Deno.test("restoring an elapsed running timer keeps its deadline without replaying an alarm", () => {
+  const app = createApp();
+  app.togglePauseTimer("game");
+  const deadline = app.findTimer("game").targetAt;
+  app.deleteTimer("game");
+  const restored = createApp(app.stored(), deadline + 120000);
+  restored.restoreDeletion();
+  assert.equal(restored.findTimer("game").targetAt, deadline);
+  assert.equal(restored.getRemainingMs(restored.findTimer("game")), -120000);
+  assert.equal(restored.findTimer("game").alarmed, true);
+  restored.updateTimers();
+  assert.equal(restored.run("alarmPlaybacks.size"), 0);
+});
+
+Deno.test("selected restore never replaces a conflicting timer ID", () => {
+  const app = createApp();
+  app.deleteTimer("game");
+  const entry = app.state.deletionHistory[0].id;
+  app.deleteTimer("tea");
+  app.state.timers.push(fixtureTimer("game", "New game", 10));
+  app.restoreDeletion(entry);
+  assert.equal(app.findTimer("game").title, "New game");
+  assert.equal(app.state.timers.filter((timer) => timer.title === "Game").length, 1);
+  assert.equal(new Set(app.state.timers.map((timer) => timer.id)).size, app.state.timers.length);
+  assert.equal(app.state.deletionHistory.length, 1);
+  assert.equal(app.state.deletionHistory[0].items[0].timer.id, "tea");
+});
 
 Deno.test("restart preserves timer identity, favorites, order and running/paused states", () => {
   const app = createApp();

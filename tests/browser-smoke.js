@@ -117,6 +117,23 @@ try {
       });
       failures.push(...dialogOverflow.map((field) => `${language} ${width}: dialog overflow: ${field}`));
       await page.evaluate(() => closeEditDialog());
+      if (basicUi) {
+        const id = await page.locator(".timer-row").first().getAttribute("data-timer-id");
+        await page.locator(`[data-timer-id="${id}"] .timer-delete-button`).click();
+        await page.click("#undoDeleteButton");
+        assert.equal(await page.locator(`[data-timer-id="${id}"]`).count(), 1);
+        await page.locator(`[data-timer-id="${id}"] .timer-delete-button`).click();
+        await page.reload();
+        await page.click("#deletionHistoryButton");
+        await page.locator("#deletionHistoryList .restore-deletion").first().click();
+        assert.equal(await page.locator(`[data-timer-id="${id}"]`).count(), 1);
+        assert.equal(await page.locator("#deletionHistoryEmpty").isVisible(), true);
+        const overflow = await page.locator("#deletionHistoryDialog").evaluate((dialog) =>
+          dialog.scrollWidth > dialog.clientWidth + 1);
+        assert.equal(overflow, false);
+        await page.screenshot({ path: `${screenshots}/${language}-${width}.png` });
+        await page.click("#deletionHistoryClose");
+      }
     }
   }
 

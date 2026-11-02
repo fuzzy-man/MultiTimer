@@ -19,6 +19,10 @@
           </div>
 
           <div class="app-controls">
+            <div class="deletion-controls">
+              <button class="icon-button restore-deletion" id="undoDeleteButton" type="button" aria-label="Скасувати останнє видалення" data-i18n-aria-label="history.undo" title="Скасувати останнє видалення" disabled>↶</button>
+              <button class="secondary-button" id="deletionHistoryButton" type="button" data-i18n="history.title">Видалені таймери</button>
+            </div>
             <label class="select-control" for="languageSelect">
               <span data-i18n="controls.language">Мова</span>
               <select id="languageSelect">
@@ -208,6 +212,17 @@
           <button class="primary-button" type="submit" data-i18n="dialog.save">Зберегти</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog class="timer-dialog" id="deletionHistoryDialog" aria-labelledby="deletionHistoryTitle">
+      <div class="timer-form">
+        <header class="dialog-header">
+          <h2 id="deletionHistoryTitle" data-i18n="history.title">Видалені таймери</h2>
+          <button class="icon-button" id="deletionHistoryClose" type="button" aria-label="Закрити" data-i18n-aria-label="dialog.close">×</button>
+        </header>
+        <p id="deletionHistoryEmpty" data-i18n="history.empty">Історія видалень порожня</p>
+        <ul class="deletion-history-list" id="deletionHistoryList"></ul>
+      </div>
     </dialog>
 
     <script src="src/app.js" defer></script>

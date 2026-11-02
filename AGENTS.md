@@ -2,6 +2,8 @@
 
 Noncritical offline HTML/CSS/JS app, opened as index.html in Firefox (file://). No build/server. Reply in Ukrainian.
 
+Read PROJECT_CACHE.md first for project context; refresh it when behavior or file ownership changes. It summarizes context, not current test evidence.
+
 ## Verification contract
 
 - For reviews/testing and behavior changes, read TEST_PLAN.md. Use its fixed BASIC scope; do not invent a new plan. A review alone does not authorize fixes.
